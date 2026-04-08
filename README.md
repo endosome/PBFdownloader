@@ -26,7 +26,7 @@ Configuration is done with the JSON file `mapconfig.json` in the directory you r
 }
 ```
 
-An example file is provided in this repository - please note that the SwissTopo example is untested and I included it only because SwissTopo uses load balancing and I needed an example for this. SwissTopo data can be [downloaded as ready-made MBtiles](https://api3.geo.admin.ch/services/sdiservices.html#gettilesets). Isn't that cool?
+An example file is provided in this repository - please note that the SwissTopo example is untested and I included it only because SwissTopo uses load balancing and I needed an example for this. SwissTopo data can be [downloaded as ready-made MBtiles](https://docs.geo.admin.ch/visualize-data/vector-tiles.html#gettilesets). Isn't that cool?
 
 ## Prerequisites
 
