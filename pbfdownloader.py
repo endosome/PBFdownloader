@@ -33,60 +33,74 @@
 # For a detailed description and instructions visit: https://projects.webvoss.de/2025/09/27/fair-use-download-of-large-vector-maps/
 #
 
-import subprocess
-import requests
-import math
-import signal
-from time import sleep
-from collections import namedtuple
-from email.utils import parsedate_to_datetime
-from pathlib import Path
-import shutil
 import datetime
 import gzip
 import json
-import sqlite3
-import time
+import math
 import random
+import shutil
+import signal
+import sqlite3
+import subprocess
+import time
+from email.utils import parsedate_to_datetime
+from pathlib import Path
+from time import sleep
+from types import FrameType
+from typing import Any, NamedTuple, TypeAlias
+
+import requests
 import typer
 
 ######## CONFIG start ######
 
 # Write to DB every X new tiles collected
-WriteInterval = 250
+WriteInterval: int = 250
 
 # Write a progress report every X seconds
-ProgressInterval = 10
+ProgressInterval: int = 10
 
 # Change 2: Randomize request intervals by this fraction to avoid perfectly periodic requests
-RequestJitterFraction = 0.20
+RequestJitterFraction: float = 0.20
 
 # Change 1: Stop individual HTTP requests from hanging indefinitely
-RequestTimeout = 30
+RequestTimeout: float = 30
 
 # Change 3: Default pause if a 429 response has no usable Retry-After header
-DefaultRetryAfter = 60
+DefaultRetryAfter: float = 60
 
 # Change 4: Ensure backoff retries are available even when only one server part is configured
-MinimumRequestAttempts = 3
+MinimumRequestAttempts: int = 3
 
 # Change 4: Limit exponential retry backoff to a reasonable maximum
-MaximumRetryBackoff = 300
+MaximumRetryBackoff: float = 300
 
 # Files for storing the status
-ProcessStateFile = Path("./DownloadState.txt")
-LogfileName = Path("./download.log")
+ProcessStateFile: Path = Path("./DownloadState.txt")
+LogfileName: Path = Path("./download.log")
 
 # User Agent for the web requests - some services block non-browser user agents
-headers = {
+headers: dict[str, str] = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0"
 }
 
 ######## CONFIG end ######
 
-Status = namedtuple("Status", ["Source", "X", "Y", "Z", "TotalTileCount"])
+MapSourceConfig: TypeAlias = dict[str, Any]
+MapConfig: TypeAlias = dict[str, MapSourceConfig]
+TileRecord: TypeAlias = tuple[int, int, int, bytes]
+TileBatch: TypeAlias = tuple[TileRecord, ...]
 
-Run = True
+
+class Status(NamedTuple):
+    Source: int
+    X: int
+    Y: int
+    Z: int
+    TotalTileCount: int
+
+
+Run: bool = True
 
 ######## INIT end #######
 
@@ -94,64 +108,92 @@ Run = True
 # From https://medium.com/@ty2/how-to-calculate-number-of-tiles-in-a-bounding-box-for-openstreetmaps-4bf8c3b767ac
 # And be aware of Y-axis deviation: https://github.com/mapbox/mbtiles-spec/blob/master/1.3/spec.md
 # Tile number check: https://labs.mapbox.com/what-the-tile/
-def deg2num(lat_deg, lon_deg, zoom):
-    lat_rad = math.radians(lat_deg)
-    n = 2.0**zoom
-    xtile = int((lon_deg + 180.0) / 360.0 * n)
-    ytile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) * n / 2.0)
-    return (xtile, ytile)
+def deg2num(lat_deg: float, lon_deg: float, zoom: int) -> tuple[int, int]:
+    lat_rad: float = math.radians(lat_deg)
+    n: float = 2.0**zoom
+    xtile: int = int((lon_deg + 180.0) / 360.0 * n)
+    ytile: int = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) * n / 2.0)
+    return xtile, ytile
 
 
-def WriteGlobalStatus(File, Source, X, Y, Z, TotalTileCount):
+def WriteGlobalStatus(
+    File: Path,
+    Source: int,
+    X: int,
+    Y: int,
+    Z: int,
+    TotalTileCount: int,
+) -> None:
     with File.open("w") as StatusFile:
         StatusFile.write(str(Source) + "\n")
         StatusFile.write(str(Z) + "\n")
         StatusFile.write(str(X) + "\n")
         StatusFile.write(str(Y) + "\n")
         StatusFile.write(str(TotalTileCount) + "\n")
+
     print("Updated Download State")
 
 
-def ReadGlobalStatus(File):
+def ReadGlobalStatus(File: Path) -> Status:
     with File.open("r") as StatusFile:
-        Source = int(StatusFile.readline())
-        Z = int(StatusFile.readline())
-        X = int(StatusFile.readline())
-        Y = int(StatusFile.readline())
-        TotalTileCount = int(StatusFile.readline())
+        Source: int = int(StatusFile.readline())
+        Z: int = int(StatusFile.readline())
+        X: int = int(StatusFile.readline())
+        Y: int = int(StatusFile.readline())
+        TotalTileCount: int = int(StatusFile.readline())
 
-    return Status(Source=Source, X=X, Y=Y, Z=Z, TotalTileCount=TotalTileCount)
+    return Status(
+        Source=Source,
+        X=X,
+        Y=Y,
+        Z=Z,
+        TotalTileCount=TotalTileCount,
+    )
 
 
-def WriteMapStatus(File, FullLoops):
+def WriteMapStatus(File: Path, FullLoops: int) -> None:
     with File.open("w") as StatusFile:
         StatusFile.write(str(FullLoops) + "\n")
 
 
-def ReadMapStatus(File):
+def ReadMapStatus(File: Path) -> int:
     with File.open("r") as StatusFile:
-        FullLoops = int(StatusFile.readline())
+        FullLoops: int = int(StatusFile.readline())
 
     return FullLoops
 
 
-def Log(LogfileName, Message):
+def Log(LogfileName: Path, Message: str) -> None:
     print(Message)
 
     with LogfileName.open("a") as Logfile:
         Logfile.write(Message + "\n")
 
 
-def CountDatabaseTiles(database_file):
+def CountDatabaseTiles(database_file: Path) -> int:
     with sqlite3.connect(database_file) as connection:
-        result = connection.execute("SELECT COUNT(*) FROM tiles").fetchone()
+        result: tuple[int] | None = connection.execute(
+            "SELECT COUNT(*) FROM tiles"
+        ).fetchone()
+
+    if result is None:
+        return 0
 
     return result[0]
 
 
-def WriteToDB(DatabaseFile, TileList, LogfileName, TotalTileCount):
+def WriteToDB(
+    DatabaseFile: Path,
+    TileList: TileBatch,
+    LogfileName: Path,
+    TotalTileCount: int,
+) -> int:
     with sqlite3.connect(DatabaseFile) as database:
-        before_count = database.execute("SELECT COUNT(*) FROM tiles").fetchone()[0]
+        before_result: tuple[int] | None = database.execute(
+            "SELECT COUNT(*) FROM tiles"
+        ).fetchone()
+
+        before_count: int = before_result[0] if before_result is not None else 0
 
         database.executemany(
             """
@@ -162,10 +204,14 @@ def WriteToDB(DatabaseFile, TileList, LogfileName, TotalTileCount):
             TileList,
         )
 
-        after_count = database.execute("SELECT COUNT(*) FROM tiles").fetchone()[0]
+        after_result: tuple[int] | None = database.execute(
+            "SELECT COUNT(*) FROM tiles"
+        ).fetchone()
 
-    unique_added = after_count - before_count
-    overwritten = len(TileList) - unique_added
+        after_count: int = after_result[0] if after_result is not None else 0
+
+    unique_added: int = after_count - before_count
+    overwritten: int = len(TileList) - unique_added
 
     Log(
         LogfileName,
@@ -181,15 +227,18 @@ def WriteToDB(DatabaseFile, TileList, LogfileName, TotalTileCount):
 
 
 # Change 2: Enforce the configured request rate and add random timing jitter
-def WaitForRequestSlot(NextRequestTime, BaseRequestSpacing):
-    CurrentTime = time.monotonic()
+def WaitForRequestSlot(
+    NextRequestTime: float,
+    BaseRequestSpacing: float,
+) -> float:
+    CurrentTime: float = time.monotonic()
 
     if CurrentTime < NextRequestTime:
         sleep(NextRequestTime - CurrentTime)
 
-    RequestStartTime = time.monotonic()
+    RequestStartTime: float = time.monotonic()
 
-    JitterMultiplier = random.uniform(
+    JitterMultiplier: float = random.uniform(
         1.0 - RequestJitterFraction,
         1.0 + RequestJitterFraction,
     )
@@ -198,7 +247,7 @@ def WaitForRequestSlot(NextRequestTime, BaseRequestSpacing):
 
 
 # Change 3: Support both numeric and HTTP-date Retry-After header values
-def ParseRetryAfter(RetryAfterValue):
+def ParseRetryAfter(RetryAfterValue: str | None) -> float:
     if RetryAfterValue is None:
         return DefaultRetryAfter
 
@@ -208,12 +257,12 @@ def ParseRetryAfter(RetryAfterValue):
         pass
 
     try:
-        RetryDate = parsedate_to_datetime(RetryAfterValue)
+        RetryDate: datetime.datetime = parsedate_to_datetime(RetryAfterValue)
 
         if RetryDate.tzinfo is None:
             RetryDate = RetryDate.replace(tzinfo=datetime.timezone.utc)
 
-        CurrentDate = datetime.datetime.now(datetime.timezone.utc)
+        CurrentDate: datetime.datetime = datetime.datetime.now(datetime.timezone.utc)
 
         return max((RetryDate - CurrentDate).total_seconds(), 0)
     except (TypeError, ValueError, OverflowError):
@@ -221,13 +270,19 @@ def ParseRetryAfter(RetryAfterValue):
 
 
 # Change 4: Increase the pause exponentially after repeated transient failures
-def CalculateRetryBackoff(BaseRequestSpacing, RetryCounter):
-    BackoffSeconds = BaseRequestSpacing * (2 ** max(RetryCounter - 1, 0))
+def CalculateRetryBackoff(
+    BaseRequestSpacing: float,
+    RetryCounter: int,
+) -> float:
+    BackoffSeconds: float = BaseRequestSpacing * (2 ** max(RetryCounter - 1, 0))
 
     return min(BackoffSeconds, MaximumRetryBackoff)
 
 
-def handler_stop_signals(signum, frame):
+def handler_stop_signals(
+    signum: int,
+    frame: FrameType | None,
+) -> None:
     global Run
     Run = False
 
@@ -247,34 +302,37 @@ def main(
         resolve_path=True,
         help="Path to the map configuration JSON file.",
     ),
-):
+) -> None:
     global Run
 
     # CLI: Load the selected configuration file, defaulting to mapconfig.json
     with config.open("r") as json_data:
-        Maplist = json.load(json_data)
+        Maplist: MapConfig = json.load(json_data)
 
-    MapSources = list(Maplist.keys())
+    MapSources: list[str] = list(Maplist.keys())
 
-    ServerPartNumber = 0
-    SessionTileCount = 0
-    TotalTileCount = 0
-    SourceCounter = 0
-    VectorTiles = ()
+    ServerPartNumber: int = 0
+    SessionTileCount: int = 0
+    TotalTileCount: int = 0
+    SourceCounter: int = 0
+    VectorTiles: TileBatch = ()
 
     Run = True
 
     # Change 1: Reuse TCP/TLS connections instead of opening a new connection for every tile
-    RequestSession = requests.Session()
+    RequestSession: requests.Session = requests.Session()
     RequestSession.headers.update(headers)
 
-    Log(LogfileName, "------ Start at " + str(datetime.datetime.now()) + " ------")
+    Log(
+        LogfileName,
+        "------ Start at " + str(datetime.datetime.now()) + " ------",
+    )
 
     signal.signal(signal.SIGINT, handler_stop_signals)
     signal.signal(signal.SIGTERM, handler_stop_signals)
 
     if ProcessStateFile.exists():
-        PickupStatus = ReadGlobalStatus(ProcessStateFile)
+        PickupStatus: Status = ReadGlobalStatus(ProcessStateFile)
 
         Log(
             LogfileName,
@@ -290,46 +348,45 @@ def main(
             + str(PickupStatus.TotalTileCount),
         )
 
-        min_z = PickupStatus.Z
+        min_z: int = PickupStatus.Z
         TotalTileCount = PickupStatus.TotalTileCount
         SourceCounter = PickupStatus.Source
-        PickupDone = PickupStatus.X == 0
-        MapRun = True
+        PickupDone: bool = PickupStatus.X == 0
+        MapRun: bool = True
     else:
         PickupDone = True
 
     while Run:
+        SourceConfig: MapSourceConfig = Maplist[MapSources[SourceCounter]]
 
-        DownloadURL = Maplist[MapSources[SourceCounter]]["DownloadURL"]
-        ServerParts = Maplist[MapSources[SourceCounter]]["ServerParts"]
-        MBtilesDB = Path(Maplist[MapSources[SourceCounter]]["MBtilesDB"])
-        MapName = Maplist[MapSources[SourceCounter]]["Name"]
-        max_z = Maplist[MapSources[SourceCounter]]["max_z"]
-        BoundingBox = Maplist[MapSources[SourceCounter]]["BoundingBox"]
-        min_z0 = Maplist[MapSources[SourceCounter]]["min_z"]
+        DownloadURL: str = SourceConfig["DownloadURL"]
+        ServerParts: list[str] = SourceConfig["ServerParts"]
+        MBtilesDB: Path = Path(SourceConfig["MBtilesDB"])
+        MapName: str = SourceConfig["Name"]
+        max_z: int = SourceConfig["max_z"]
+        BoundingBox: list[float] = SourceConfig["BoundingBox"]
+        min_z0: int = SourceConfig["min_z"]
 
         # Change 5: Prefer an explicit requests-per-second setting, with ReadSpacing as a legacy fallback
-        if "RequestsPerSecond" in Maplist[MapSources[SourceCounter]]:
-            RequestsPerSecond = float(
-                Maplist[MapSources[SourceCounter]]["RequestsPerSecond"]
-            )
+        if "RequestsPerSecond" in SourceConfig:
+            RequestsPerSecond: float = float(SourceConfig["RequestsPerSecond"])
 
             if RequestsPerSecond <= 0:
                 raise ValueError("RequestsPerSecond must be greater than zero")
 
-            ReadSpacing = 1.0 / RequestsPerSecond
+            ReadSpacing: float = 1.0 / RequestsPerSecond
         else:
-            ReadSpacing = float(Maplist[MapSources[SourceCounter]]["ReadSpacing"])
+            ReadSpacing = float(SourceConfig["ReadSpacing"])
 
             if ReadSpacing <= 0:
                 raise ValueError("ReadSpacing must be greater than zero")
 
             RequestsPerSecond = 1.0 / ReadSpacing
 
-        MapStatusFile = Path(".") / (MapSources[SourceCounter] + "_status.txt")
+        MapStatusFile: Path = Path(".") / (MapSources[SourceCounter] + "_status.txt")
 
         if MapStatusFile.exists():
-            FullLoops = ReadMapStatus(MapStatusFile)
+            FullLoops: int = ReadMapStatus(MapStatusFile)
         else:
             FullLoops = 0
 
@@ -338,13 +395,16 @@ def main(
 
         MapRun = True
 
-        NumberOfServerParts = len(ServerParts)
+        NumberOfServerParts: int = len(ServerParts)
 
         # Change 4: Use at least three attempts so backoff also works with a single server
-        MaxRetries = max(NumberOfServerParts, MinimumRequestAttempts)
+        MaxRetries: int = max(
+            NumberOfServerParts,
+            MinimumRequestAttempts,
+        )
 
         # Change 5: Track the next permitted request start time for this map source
-        NextRequestTime = time.monotonic()
+        NextRequestTime: float = time.monotonic()
 
         Log(
             LogfileName,
@@ -407,27 +467,27 @@ def main(
                 ),
             )
 
-        TotalTilesToProcess = 0
+        TotalTilesToProcess: int = 0
 
         for ProgressZ in range(min_z, max_z + 1):
-            ProgressLowerLeft = deg2num(
+            ProgressLowerLeft: tuple[int, int] = deg2num(
                 BoundingBox[1],
                 BoundingBox[0],
                 ProgressZ,
             )
 
-            ProgressUpperRight = deg2num(
+            ProgressUpperRight: tuple[int, int] = deg2num(
                 BoundingBox[3],
                 BoundingBox[2],
                 ProgressZ,
             )
 
-            ProgressMinX = ProgressLowerLeft[0]
-            ProgressMaxX = ProgressUpperRight[0]
-            ProgressMinY = ProgressUpperRight[1]
-            ProgressMaxY = ProgressLowerLeft[1]
+            ProgressMinX: int = ProgressLowerLeft[0]
+            ProgressMaxX: int = ProgressUpperRight[0]
+            ProgressMinY: int = ProgressUpperRight[1]
+            ProgressMaxY: int = ProgressLowerLeft[1]
 
-            ProgressWidth = ProgressMaxX - ProgressMinX + 1
+            ProgressWidth: int = ProgressMaxX - ProgressMinX + 1
 
             if not PickupDone and ProgressZ == PickupStatus.Z:
                 TotalTilesToProcess += (
@@ -436,11 +496,11 @@ def main(
             else:
                 TotalTilesToProcess += ProgressWidth * (ProgressMaxY - ProgressMinY + 1)
 
-        OverallTilesProcessed = 0
-        SuccessfulTilesThisMap = 0
-        MissingTilesThisMap = 0
-        ProgressStartTime = time.monotonic()
-        LastProgressTime = ProgressStartTime
+        OverallTilesProcessed: int = 0
+        SuccessfulTilesThisMap: int = 0
+        MissingTilesThisMap: int = 0
+        ProgressStartTime: float = time.monotonic()
+        LastProgressTime: float = ProgressStartTime
 
         Log(
             LogfileName,
@@ -448,7 +508,6 @@ def main(
         )
 
         while MapRun and Run:
-
             Log(
                 LogfileName,
                 "Now processing "
@@ -459,29 +518,28 @@ def main(
             )
 
             for Z in range(min_z, max_z + 1):
-
                 # Coordinates for Google-style URLs
-                LowerLeft = deg2num(
+                LowerLeft: tuple[int, int] = deg2num(
                     BoundingBox[1],
                     BoundingBox[0],
                     Z,  # min latitude  # min longitude
                 )
 
-                UpperRight = deg2num(
+                UpperRight: tuple[int, int] = deg2num(
                     BoundingBox[3],
                     BoundingBox[2],
                     Z,  # max latitude  # max longitude
                 )
 
-                min_x = LowerLeft[0]
-                max_x = UpperRight[0]
-                min_y = UpperRight[1]
-                max_y = LowerLeft[1]
+                min_x: int = LowerLeft[0]
+                max_x: int = UpperRight[0]
+                min_y: int = UpperRight[1]
+                max_y: int = LowerLeft[1]
 
                 # Google-Scheme to Mapbox/TMS Y is: Y_mapbox = 2^Z - 1 - Y_tms
-                Yconversion = 2**Z - 1
+                Yconversion: int = 2**Z - 1
 
-                NumberOfTiles = (max_x - min_x + 1) * (max_y - min_y + 1)
+                NumberOfTiles: int = (max_x - min_x + 1) * (max_y - min_y + 1)
 
                 WriteGlobalStatus(
                     ProcessStateFile,
@@ -492,18 +550,18 @@ def main(
                     TotalTileCount,
                 )
 
-                LevelPickup = not PickupDone
+                LevelPickup: bool = not PickupDone
 
                 if PickupDone:
-                    StartY = min_y
-                    LevelTilesToProcess = NumberOfTiles
+                    StartY: int = min_y
+                    LevelTilesToProcess: int = NumberOfTiles
                 else:
                     StartY = PickupStatus.Y
                     LevelTilesToProcess = (max_y - PickupStatus.Y) * (
                         max_x - min_x + 1
                     ) + (max_x - PickupStatus.X + 1)
 
-                LevelTilesProcessed = 0
+                LevelTilesProcessed: int = 0
 
                 Log(
                     LogfileName,
@@ -519,27 +577,25 @@ def main(
                 )
 
                 for Y in range(StartY, max_y + 1):
-
                     if PickupDone:
-                        StartX = min_x
+                        StartX: int = min_x
                     else:
                         StartX = PickupStatus.X
                         PickupDone = True
 
                     for X in range(StartX, max_x + 1):
-
-                        RetryCounter = 0
-                        TileDownloadedSuccessfully = False
-                        TileMissing = False
+                        RetryCounter: int = 0
+                        TileDownloadedSuccessfully: bool = False
+                        TileMissing: bool = False
 
                         while RetryCounter < MaxRetries:
-                            ServerPart = ServerParts[ServerPartNumber]
+                            ServerPart: str = ServerParts[ServerPartNumber]
                             ServerPartNumber += 1
 
                             if ServerPartNumber == NumberOfServerParts:
                                 ServerPartNumber = 0
 
-                            URL = (
+                            URL: str = (
                                 DownloadURL.replace(
                                     "{server}",
                                     ServerPart,
@@ -557,7 +613,7 @@ def main(
 
                             try:
                                 # Change 1: Use the shared session and a finite request timeout
-                                TileDownload = RequestSession.get(
+                                TileDownload: requests.Response = RequestSession.get(
                                     URL,
                                     timeout=RequestTimeout,
                                 )
@@ -584,7 +640,7 @@ def main(
                                     Run = False
                                 else:
                                     # Change 4: Back off exponentially after transient request failures
-                                    BackoffSeconds = CalculateRetryBackoff(
+                                    BackoffSeconds: float = CalculateRetryBackoff(
                                         ReadSpacing,
                                         RetryCounter,
                                     )
@@ -612,7 +668,7 @@ def main(
                                 continue
 
                             if TileDownload.status_code == 200:
-                                TileData = gzip.compress(TileDownload.content)
+                                TileData: bytes = gzip.compress(TileDownload.content)
 
                                 VectorTiles += (
                                     (
@@ -652,7 +708,7 @@ def main(
                             elif TileDownload.status_code == 429:
                                 RetryCounter += 1
 
-                                RetryAfterSeconds = ParseRetryAfter(
+                                RetryAfterSeconds: float = ParseRetryAfter(
                                     TileDownload.headers.get("Retry-After")
                                 )
 
@@ -787,43 +843,45 @@ def main(
                         LevelTilesProcessed += 1
                         OverallTilesProcessed += 1
 
-                        CurrentTime = time.monotonic()
+                        CurrentTime: float = time.monotonic()
 
                         if (
                             CurrentTime - LastProgressTime >= ProgressInterval
                             or LevelTilesProcessed == LevelTilesToProcess
                             or not Run
                         ):
-                            ElapsedSeconds = CurrentTime - ProgressStartTime
+                            ElapsedSeconds: float = CurrentTime - ProgressStartTime
 
                             if ElapsedSeconds > 0:
-                                ProcessingSpeed = OverallTilesProcessed / ElapsedSeconds
+                                ProcessingSpeed: float = (
+                                    OverallTilesProcessed / ElapsedSeconds
+                                )
                             else:
                                 ProcessingSpeed = 0
 
-                            RemainingTiles = max(
+                            RemainingTiles: int = max(
                                 TotalTilesToProcess - OverallTilesProcessed,
                                 0,
                             )
 
                             if ProcessingSpeed > 0:
-                                ETASeconds = RemainingTiles / ProcessingSpeed
+                                ETASeconds: float = RemainingTiles / ProcessingSpeed
 
-                                ETAString = str(
+                                ETAString: str = str(
                                     datetime.timedelta(seconds=int(ETASeconds))
                                 )
                             else:
                                 ETAString = "unknown"
 
                             if LevelTilesToProcess > 0:
-                                LevelPercent = (
+                                LevelPercent: float = (
                                     LevelTilesProcessed / LevelTilesToProcess * 100
                                 )
                             else:
                                 LevelPercent = 100
 
                             if TotalTilesToProcess > 0:
-                                OverallPercent = (
+                                OverallPercent: float = (
                                     OverallTilesProcessed / TotalTilesToProcess * 100
                                 )
                             else:
@@ -897,7 +955,7 @@ def main(
                     check=True,
                 )
 
-                MBtilesCopy = MBtilesDB.with_name(
+                MBtilesCopy: Path = MBtilesDB.with_name(
                     MBtilesDB.stem + str(FullLoops) + MBtilesDB.suffix
                 )
 
