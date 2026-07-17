@@ -225,7 +225,11 @@ while Run:
 		out.meta['crs'] = "EPSG:3857"
 		out.meta['minzoom'] = str(min_z0)
 		out.meta['maxzoom'] = str(max_z)
-		out.meta['bounds'] = str(BoundingBox[1]) + "," + str(BoundingBox[0]) + "," + str(BoundingBox[3]) + "," + str(BoundingBox[2])
+		# MBTiles 1.3 specification requires bounds in this order:
+		# left, bottom, right, top
+		# which corresponds to:
+		# west longitude, south latitude, east longitude, north latitude
+		out.meta['bounds'] = ",".join(str(value) for value in BoundingBox)
 
 	while (MapRun and Run):
 
