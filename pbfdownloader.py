@@ -354,8 +354,11 @@ while Run:
 			MapRun = False
 			PickupDone = True
 
-			if (SourceCounter >= len(MapSources)):
-				SourceCounter = 0
+			if SourceCounter >= len(MapSources):
+					if os.path.exists(ProcessStateFile):
+							os.remove(ProcessStateFile)
+
+					Run = False
 
 Log(LogfileName, "Shutdown received or error occured - graceful exit successfull.")
 Log (LogfileName, "------ Download ended at " + str(datetime.datetime.now()) + " after getting " + str(SessionTileCount) + " tiles. ------")
