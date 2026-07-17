@@ -44,11 +44,15 @@ import gzip
 import os
 import json
 import sqlite3
+import time
 
 ######## CONFIG start ######
 
 # Write to DB every X new tiles collected
 WriteInterval = 250
+
+# Write a progress report every X seconds
+ProgressInterval = 10
 
 # Files for storing the status
 ProcessStateFile = "./DownloadState.txt"
@@ -278,6 +282,46 @@ while Run:
             ),
         )
 
+    TotalTilesToProcess = 0
+
+    for ProgressZ in range(min_z, max_z + 1):
+        ProgressLowerLeft = deg2num(
+            BoundingBox[1],
+            BoundingBox[0],
+            ProgressZ,
+        )
+
+        ProgressUpperRight = deg2num(
+            BoundingBox[3],
+            BoundingBox[2],
+            ProgressZ,
+        )
+
+        ProgressMinX = ProgressLowerLeft[0]
+        ProgressMaxX = ProgressUpperRight[0]
+        ProgressMinY = ProgressUpperRight[1]
+        ProgressMaxY = ProgressLowerLeft[1]
+
+        ProgressWidth = ProgressMaxX - ProgressMinX + 1
+
+        if not PickupDone and ProgressZ == PickupStatus.Z:
+            TotalTilesToProcess += (ProgressMaxY - PickupStatus.Y) * ProgressWidth + (
+                ProgressMaxX - PickupStatus.X + 1
+            )
+        else:
+            TotalTilesToProcess += ProgressWidth * (ProgressMaxY - ProgressMinY + 1)
+
+    OverallTilesProcessed = 0
+    SuccessfulTilesThisMap = 0
+    MissingTilesThisMap = 0
+    ProgressStartTime = time.monotonic()
+    LastProgressTime = ProgressStartTime
+
+    Log(
+        LogfileName,
+        "Total tiles scheduled for this run: " + str(TotalTilesToProcess),
+    )
+
     while MapRun and Run:
 
         Log(
@@ -310,18 +354,31 @@ while Run:
                 ProcessStateFile, SourceCounter, min_x, min_y, Z, TotalTileCount
             )
 
+            LevelPickup = not PickupDone
+
+            if PickupDone:
+                StartY = min_y
+                LevelTilesToProcess = NumberOfTiles
+            else:
+                StartY = PickupStatus.Y
+                LevelTilesToProcess = (max_y - PickupStatus.Y) * (max_x - min_x + 1) + (
+                    max_x - PickupStatus.X + 1
+                )
+
+            LevelTilesProcessed = 0
+
             Log(
                 LogfileName,
                 "Will download Level "
                 + str(Z)
                 + " - number of tiles: "
-                + str(NumberOfTiles),
+                + str(NumberOfTiles)
+                + (
+                    " - remaining this run: " + str(LevelTilesToProcess)
+                    if LevelPickup
+                    else ""
+                ),
             )
-
-            if PickupDone:
-                StartY = min_y
-            else:
-                StartY = PickupStatus.Y
 
             for Y in range(StartY, max_y + 1):
 
@@ -334,6 +391,8 @@ while Run:
                 for X in range(StartX, max_x + 1):
 
                     RetryCounter = 0
+                    TileDownloadedSuccessfully = False
+                    TileMissing = False
 
                     while RetryCounter < MaxRetries:
                         ServerPart = ServerParts[ServerPartNumber]
@@ -353,6 +412,8 @@ while Run:
                             TileData = gzip.compress(TileDownload.content)
                             VectorTiles += ((Z, X, Yconversion - Y, TileData),)
                             SessionTileCount += 1
+                            SuccessfulTilesThisMap += 1
+                            TileDownloadedSuccessfully = True
 
                             RetryCounter = MaxRetries  # Flag as done
 
@@ -372,6 +433,8 @@ while Run:
                         elif TileDownload.status_code == 404:
                             RetryCounter += 1
                             if RetryCounter == MaxRetries:
+                                TileMissing = True
+                                MissingTilesThisMap += 1
                                 Log(
                                     LogfileName,
                                     "Warning: Tile Z,X,Y "
@@ -412,6 +475,67 @@ while Run:
 
                         if not Run:
                             break
+
+                    LevelTilesProcessed += 1
+                    OverallTilesProcessed += 1
+
+                    CurrentTime = time.monotonic()
+
+                    if (
+                        CurrentTime - LastProgressTime >= ProgressInterval
+                        or LevelTilesProcessed == LevelTilesToProcess
+                        or not Run
+                    ):
+                        ElapsedSeconds = CurrentTime - ProgressStartTime
+
+                        if ElapsedSeconds > 0:
+                            ProcessingSpeed = OverallTilesProcessed / ElapsedSeconds
+                        else:
+                            ProcessingSpeed = 0
+
+                        RemainingTiles = max(
+                            TotalTilesToProcess - OverallTilesProcessed,
+                            0,
+                        )
+
+                        if ProcessingSpeed > 0:
+                            ETASeconds = RemainingTiles / ProcessingSpeed
+                            ETAString = str(datetime.timedelta(seconds=int(ETASeconds)))
+                        else:
+                            ETAString = "unknown"
+
+                        if LevelTilesToProcess > 0:
+                            LevelPercent = (
+                                LevelTilesProcessed / LevelTilesToProcess * 100
+                            )
+                        else:
+                            LevelPercent = 100
+
+                        if TotalTilesToProcess > 0:
+                            OverallPercent = (
+                                OverallTilesProcessed / TotalTilesToProcess * 100
+                            )
+                        else:
+                            OverallPercent = 100
+
+                        Log(
+                            LogfileName,
+                            (
+                                f"{datetime.datetime.now():%H:%M:%S} | "
+                                f"z{Z} "
+                                f"{LevelTilesProcessed}/{LevelTilesToProcess} "
+                                f"({LevelPercent:.1f}%) | "
+                                f"overall "
+                                f"{OverallTilesProcessed}/{TotalTilesToProcess} "
+                                f"({OverallPercent:.1f}%) | "
+                                f"downloaded {SuccessfulTilesThisMap} | "
+                                f"missing {MissingTilesThisMap} | "
+                                f"{ProcessingSpeed:.2f} tiles/s | "
+                                f"ETA {ETAString}"
+                            ),
+                        )
+
+                        LastProgressTime = CurrentTime
 
                     if Run:
                         sleep(ReadSpacing)
