@@ -260,7 +260,14 @@ while Run:
 
 			NumberOfTiles = (max_x - min_x + 1) * (max_y - min_y + 1)
 
-			WriteGlobalStatus(ProcessStateFile, SourceCounter, min_x, min_y, min_z, TotalTileCount)
+			WriteGlobalStatus(
+					ProcessStateFile,
+					SourceCounter,
+					min_x,
+					min_y,
+					Z,
+					TotalTileCount
+			)
 
 			Log(LogfileName, "Will download Level " + str(Z) + " - number of tiles: " + str(NumberOfTiles))
 
