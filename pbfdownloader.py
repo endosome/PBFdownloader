@@ -11,16 +11,16 @@
 #
 # Map configuration is stored in a json file, with the following scheme:
 # {
-#	"FreelyChosenMapName": {
-#		"DownloadURL": "https://{server}.mapsource.tld/path/to/pbf/tiles/{z}/{x}/{y}/tile.pbf?any=get&var=needed",	  # {server} is placeholder for serverparts (load balancing), {x}, {y} and {z} are placeholders for tile coordinate
-#		"BoundingBox": [min_lon, min_lat, max_lon, max_lat],
-#		"ServerParts": ["server1", "server2", ...],                                                                   # may be empty, i.e. [""], if no {server} placeholder is present in DownloadURL
-#		"MBtilesDB": "/path/to/your/MBtiles-file.mbtiles",
-#		"Name": "Mapname in the MBtiles DB",
-#		"min_z": 0,
-#		"max_z": 14,
-#		"ReadSpacing": 1.5																							  # wait-time between to requests in seconds
-#	},
+# 	"FreelyChosenMapName": {
+# 		"DownloadURL": "https://{server}.mapsource.tld/path/to/pbf/tiles/{z}/{x}/{y}/tile.pbf?any=get&var=needed",	  # {server} is placeholder for serverparts (load balancing), {x}, {y} and {z} are placeholders for tile coordinate
+# 		"BoundingBox": [min_lon, min_lat, max_lon, max_lat],
+# 		"ServerParts": ["server1", "server2", ...],                                                                   # may be empty, i.e. [""], if no {server} placeholder is present in DownloadURL
+# 		"MBtilesDB": "/path/to/your/MBtiles-file.mbtiles",
+# 		"Name": "Mapname in the MBtiles DB",
+# 		"min_z": 0,
+# 		"max_z": 14,
+# 		"ReadSpacing": 1.5																							  # wait-time between to requests in seconds
+# 	},
 #   "NextMap": {...},
 #   ...
 # }
@@ -45,7 +45,6 @@ import os
 import json
 import sqlite3
 
-
 ######## CONFIG start ######
 
 # Write to DB every X new tiles collected
@@ -56,11 +55,13 @@ ProcessStateFile = "./DownloadState.txt"
 LogfileName = "./download.log"
 
 # User Agent for the web requests - some services block non-browser user agents
-headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0'}
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0"
+}
 
 ######## CONFIG end ######
 
-with open('./mapconfig.json') as json_data:
+with open("./mapconfig.json") as json_data:
     Maplist = json.load(json_data)
     json_data.close()
 
@@ -72,66 +73,72 @@ TotalTileCount = 0
 SourceCounter = 0
 VectorTiles = ()
 
-Status = namedtuple("Status", ['Source', 'X', 'Y', 'Z', 'TotalTileCount'])
+Status = namedtuple("Status", ["Source", "X", "Y", "Z", "TotalTileCount"])
 
 Run = True
 
 ######## INIT end #######
 
+
 # From https://medium.com/@ty2/how-to-calculate-number-of-tiles-in-a-bounding-box-for-openstreetmaps-4bf8c3b767ac
 # And be aware of Y-axis deviation: https://github.com/mapbox/mbtiles-spec/blob/master/1.3/spec.md
 # Tile number check: https://labs.mapbox.com/what-the-tile/
 def deg2num(lat_deg, lon_deg, zoom):
-	lat_rad = math.radians(lat_deg)
-	n = 2.0 ** zoom
-	xtile = int((lon_deg + 180.0) / 360.0 * n)
-	ytile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) * n / 2.0)
-	return (xtile, ytile)
+    lat_rad = math.radians(lat_deg)
+    n = 2.0**zoom
+    xtile = int((lon_deg + 180.0) / 360.0 * n)
+    ytile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) * n / 2.0)
+    return (xtile, ytile)
+
 
 def WriteGlobalStatus(File, Source, X, Y, Z, TotalTileCount):
-	with open(File, 'w') as StatusFile:
-		StatusFile.write(str(Source) + "\n")
-		StatusFile.write(str(Z) + "\n")
-		StatusFile.write(str(X) + "\n")
-		StatusFile.write(str(Y) + "\n")
-		StatusFile.write(str(TotalTileCount) + "\n")
-		StatusFile.close()
-	print ("Updated Download State")
+    with open(File, "w") as StatusFile:
+        StatusFile.write(str(Source) + "\n")
+        StatusFile.write(str(Z) + "\n")
+        StatusFile.write(str(X) + "\n")
+        StatusFile.write(str(Y) + "\n")
+        StatusFile.write(str(TotalTileCount) + "\n")
+        StatusFile.close()
+    print("Updated Download State")
+
 
 def ReadGlobalStatus(File):
-	with open(File, 'r') as StatusFile:
-		Source = int(StatusFile.readline())
-		Z = int(StatusFile.readline())
-		X = int(StatusFile.readline())
-		Y = int(StatusFile.readline())
-		TotalTileCount = int(StatusFile.readline())
-		StatusFile.close()
-	return Status(Source = Source, X = X, Y = Y, Z = Z, TotalTileCount = TotalTileCount)
+    with open(File, "r") as StatusFile:
+        Source = int(StatusFile.readline())
+        Z = int(StatusFile.readline())
+        X = int(StatusFile.readline())
+        Y = int(StatusFile.readline())
+        TotalTileCount = int(StatusFile.readline())
+        StatusFile.close()
+    return Status(Source=Source, X=X, Y=Y, Z=Z, TotalTileCount=TotalTileCount)
+
 
 def WriteMapStatus(File, FullLoops):
-	with open(File, 'w') as StatusFile:
-		StatusFile.write(str(FullLoops) + "\n")
-		StatusFile.close()
+    with open(File, "w") as StatusFile:
+        StatusFile.write(str(FullLoops) + "\n")
+        StatusFile.close()
+
 
 def ReadMapStatus(File):
-	with open(File, 'r') as StatusFile:
-		FullLoops = int(StatusFile.readline())
-		StatusFile.close()
-	return FullLoops
+    with open(File, "r") as StatusFile:
+        FullLoops = int(StatusFile.readline())
+        StatusFile.close()
+    return FullLoops
+
 
 def Log(LogfileName, Message):
-	print (Message)
-	with open(LogfileName, 'a') as Logfile:
-		Logfile.write(Message + "\n")
-		Logfile.close()
+    print(Message)
+    with open(LogfileName, "a") as Logfile:
+        Logfile.write(Message + "\n")
+        Logfile.close()
+
 
 def CountDatabaseTiles(database_file):
     with sqlite3.connect(database_file) as connection:
-        result = connection.execute(
-            "SELECT COUNT(*) FROM tiles"
-        ).fetchone()
+        result = connection.execute("SELECT COUNT(*) FROM tiles").fetchone()
 
     return result[0]
+
 
 def WriteToDB(DatabaseFile, TileList, LogfileName, TotalTileCount):
     before_count = CountDatabaseTiles(DatabaseFile)
@@ -150,14 +157,16 @@ def WriteToDB(DatabaseFile, TileList, LogfileName, TotalTileCount):
             f"New unique tiles: {unique_added}. "
             f"Overwritten tiles: {overwritten}. "
             f"Database total: {after_count}"
-        )
+        ),
     )
 
     return after_count
 
+
 def handler_stop_signals(signum, frame):
     global Run
     Run = False
+
 
 ######## Procedures end #########
 
@@ -167,201 +176,267 @@ signal.signal(signal.SIGINT, handler_stop_signals)
 signal.signal(signal.SIGTERM, handler_stop_signals)
 
 if os.path.exists(ProcessStateFile):
-	PickupStatus = ReadGlobalStatus(ProcessStateFile)
-	Log(LogfileName, "Pick up from S,Z,X,Y,T: " + str(MapSources[PickupStatus.Source]) + " " + str(PickupStatus.Z) + " " + str(PickupStatus.X) + " " + str(PickupStatus.Y) + " " + str(PickupStatus.TotalTileCount))
-	min_z = PickupStatus.Z
-	TotalTileCount = PickupStatus.TotalTileCount
-	SourceCounter = PickupStatus.Source
-	PickupDone = (PickupStatus.X == 0)
-	MapRun = True
+    PickupStatus = ReadGlobalStatus(ProcessStateFile)
+    Log(
+        LogfileName,
+        "Pick up from S,Z,X,Y,T: "
+        + str(MapSources[PickupStatus.Source])
+        + " "
+        + str(PickupStatus.Z)
+        + " "
+        + str(PickupStatus.X)
+        + " "
+        + str(PickupStatus.Y)
+        + " "
+        + str(PickupStatus.TotalTileCount),
+    )
+    min_z = PickupStatus.Z
+    TotalTileCount = PickupStatus.TotalTileCount
+    SourceCounter = PickupStatus.Source
+    PickupDone = PickupStatus.X == 0
+    MapRun = True
 else:
-	PickupDone = True
+    PickupDone = True
 
 while Run:
 
-	DownloadURL = Maplist[MapSources[SourceCounter]]["DownloadURL"]
-	ServerParts = Maplist[MapSources[SourceCounter]]["ServerParts"]
-	MBtilesDB = Maplist[MapSources[SourceCounter]]["MBtilesDB"]
-	MapName = Maplist[MapSources[SourceCounter]]["Name"]
-	max_z = Maplist[MapSources[SourceCounter]]["max_z"]
-	BoundingBox = Maplist[MapSources[SourceCounter]]["BoundingBox"]
-	ReadSpacing = Maplist[MapSources[SourceCounter]]["ReadSpacing"]
-	min_z0 = Maplist[MapSources[SourceCounter]]["min_z"]
-	MapStatusFile = "./" + MapSources[SourceCounter] + "_status.txt"
-	if os.path.exists(MapStatusFile):
-		FullLoops = ReadMapStatus(MapStatusFile)
-	else:
-		FullLoops = 0
-	if PickupDone:
-		min_z = min_z0
-	MapRun = True
+    DownloadURL = Maplist[MapSources[SourceCounter]]["DownloadURL"]
+    ServerParts = Maplist[MapSources[SourceCounter]]["ServerParts"]
+    MBtilesDB = Maplist[MapSources[SourceCounter]]["MBtilesDB"]
+    MapName = Maplist[MapSources[SourceCounter]]["Name"]
+    max_z = Maplist[MapSources[SourceCounter]]["max_z"]
+    BoundingBox = Maplist[MapSources[SourceCounter]]["BoundingBox"]
+    ReadSpacing = Maplist[MapSources[SourceCounter]]["ReadSpacing"]
+    min_z0 = Maplist[MapSources[SourceCounter]]["min_z"]
+    MapStatusFile = "./" + MapSources[SourceCounter] + "_status.txt"
+    if os.path.exists(MapStatusFile):
+        FullLoops = ReadMapStatus(MapStatusFile)
+    else:
+        FullLoops = 0
+    if PickupDone:
+        min_z = min_z0
+    MapRun = True
 
-	NumberOfServerParts = len(ServerParts)
-	MaxRetries = NumberOfServerParts
+    NumberOfServerParts = len(ServerParts)
+    MaxRetries = NumberOfServerParts
 
-### For Debugging
-#	print(DownloadURL)
-#	print(ServerParts)
-#	print(MBtilesDB)
-#	print(MapName)
-#	print(max_z)
-#	print(min_z0)
-#	print(min_z)
-#	print(BoundingBox)
-#	print(ReadSpacing)
-#	print(MapStatusFile)
-#	print(NumberOfServerParts)
-#	print(MaxRetries)
-#	print(FullLoops)
+    ### For Debugging
+    # 	print(DownloadURL)
+    # 	print(ServerParts)
+    # 	print(MBtilesDB)
+    # 	print(MapName)
+    # 	print(max_z)
+    # 	print(min_z0)
+    # 	print(min_z)
+    # 	print(BoundingBox)
+    # 	print(ReadSpacing)
+    # 	print(MapStatusFile)
+    # 	print(NumberOfServerParts)
+    # 	print(MaxRetries)
+    # 	print(FullLoops)
 
-	if os.path.exists(MBtilesDB):
-		AccessMode = "r+"
-	else:
-		AccessMode = "w"
+    if os.path.exists(MBtilesDB):
+        AccessMode = "r+"
+    else:
+        AccessMode = "w"
 
-	with MBtiles(MBtilesDB, AccessMode) as out:
-		out.meta['name'] = MapName
-		out.meta['format'] = "pbf"
-		out.meta['crs'] = "EPSG:3857"
-		out.meta['minzoom'] = str(min_z0)
-		out.meta['maxzoom'] = str(max_z)
-		# MBTiles 1.3 specification requires bounds in this order:
-		# left, bottom, right, top
-		# which corresponds to:
-		# west longitude, south latitude, east longitude, north latitude
-		out.meta['bounds'] = ",".join(str(value) for value in BoundingBox)
+    with MBtiles(MBtilesDB, AccessMode) as out:
+        out.meta["name"] = MapName
+        out.meta["format"] = "pbf"
+        out.meta["crs"] = "EPSG:3857"
+        out.meta["minzoom"] = str(min_z0)
+        out.meta["maxzoom"] = str(max_z)
+        # MBTiles 1.3 specification requires bounds in this order:
+        # left, bottom, right, top
+        # which corresponds to:
+        # west longitude, south latitude, east longitude, north latitude
+        out.meta["bounds"] = ",".join(str(value) for value in BoundingBox)
 
-	while (MapRun and Run):
+    while MapRun and Run:
 
-		Log(LogfileName, "Now processing " + MapSources[SourceCounter] + " (" + MBtilesDB + ")")
+        Log(
+            LogfileName,
+            "Now processing " + MapSources[SourceCounter] + " (" + MBtilesDB + ")",
+        )
 
-		for Z in range(min_z, max_z + 1):
+        for Z in range(min_z, max_z + 1):
 
-			# Coordinates for Google-style URLs
-			LowerLeft = deg2num(
-					BoundingBox[1],  # min latitude
-					BoundingBox[0],  # min longitude
-					Z
-			)
+            # Coordinates for Google-style URLs
+            LowerLeft = deg2num(
+                BoundingBox[1], BoundingBox[0], Z  # min latitude  # min longitude
+            )
 
-			UpperRight = deg2num(
-					BoundingBox[3],  # max latitude
-					BoundingBox[2],  # max longitude
-					Z
-			)
+            UpperRight = deg2num(
+                BoundingBox[3], BoundingBox[2], Z  # max latitude  # max longitude
+            )
 
-			min_x = LowerLeft[0]
-			max_x = UpperRight[0]
-			min_y = UpperRight[1]
-			max_y = LowerLeft[1]
+            min_x = LowerLeft[0]
+            max_x = UpperRight[0]
+            min_y = UpperRight[1]
+            max_y = LowerLeft[1]
 
-			# Google-Scheme to Mapbox/TMS Y is: Y_mapbox = 2^Z - 1 - Y_tms
-			Yconversion = 2 ** Z - 1
+            # Google-Scheme to Mapbox/TMS Y is: Y_mapbox = 2^Z - 1 - Y_tms
+            Yconversion = 2**Z - 1
 
-			NumberOfTiles = (max_x - min_x + 1) * (max_y - min_y + 1)
+            NumberOfTiles = (max_x - min_x + 1) * (max_y - min_y + 1)
 
-			WriteGlobalStatus(
-					ProcessStateFile,
-					SourceCounter,
-					min_x,
-					min_y,
-					Z,
-					TotalTileCount
-			)
+            WriteGlobalStatus(
+                ProcessStateFile, SourceCounter, min_x, min_y, Z, TotalTileCount
+            )
 
-			Log(LogfileName, "Will download Level " + str(Z) + " - number of tiles: " + str(NumberOfTiles))
+            Log(
+                LogfileName,
+                "Will download Level "
+                + str(Z)
+                + " - number of tiles: "
+                + str(NumberOfTiles),
+            )
 
-			if PickupDone:
-				StartY = min_y
-			else:
-				StartY = PickupStatus.Y
+            if PickupDone:
+                StartY = min_y
+            else:
+                StartY = PickupStatus.Y
 
-			for Y in range(StartY, max_y + 1):
+            for Y in range(StartY, max_y + 1):
 
-				if PickupDone:
-					StartX = min_x
-				else:
-					StartX = PickupStatus.X
-					PickupDone = True
+                if PickupDone:
+                    StartX = min_x
+                else:
+                    StartX = PickupStatus.X
+                    PickupDone = True
 
-				for X in range(StartX, max_x + 1):
+                for X in range(StartX, max_x + 1):
 
-					RetryCounter = 0
+                    RetryCounter = 0
 
-					while (RetryCounter < MaxRetries):
-						ServerPart = ServerParts[ServerPartNumber]
-						ServerPartNumber += 1
-						if ServerPartNumber == NumberOfServerParts:
-							ServerPartNumber = 0
+                    while RetryCounter < MaxRetries:
+                        ServerPart = ServerParts[ServerPartNumber]
+                        ServerPartNumber += 1
+                        if ServerPartNumber == NumberOfServerParts:
+                            ServerPartNumber = 0
 
-						URL = DownloadURL.replace("{server}", ServerPart).replace("{x}", str(X)).replace("{y}", str(Y)).replace("{z}", str(Z))
-						TileDownload = requests.get(URL, headers = headers)
+                        URL = (
+                            DownloadURL.replace("{server}", ServerPart)
+                            .replace("{x}", str(X))
+                            .replace("{y}", str(Y))
+                            .replace("{z}", str(Z))
+                        )
+                        TileDownload = requests.get(URL, headers=headers)
 
-						if (TileDownload.status_code == 200):
-							TileData = gzip.compress(TileDownload.content)
-							VectorTiles += (Tile(z = Z, x = X, y = Yconversion - Y, data = TileData),)
-							SessionTileCount += 1
+                        if TileDownload.status_code == 200:
+                            TileData = gzip.compress(TileDownload.content)
+                            VectorTiles += (
+                                Tile(z=Z, x=X, y=Yconversion - Y, data=TileData),
+                            )
+                            SessionTileCount += 1
 
-							RetryCounter = MaxRetries   # Flag as done
+                            RetryCounter = MaxRetries  # Flag as done
 
-							if (len(VectorTiles) == WriteInterval):
-								TotalTileCount = WriteToDB(MBtilesDB, VectorTiles, LogfileName, TotalTileCount)
-								VectorTiles = ()
-								WriteGlobalStatus(ProcessStateFile, SourceCounter, X, Y, Z, TotalTileCount)
-						elif (TileDownload.status_code == 404):
-							RetryCounter += 1
-							if (RetryCounter == MaxRetries):
-								Log(LogfileName, "Warning: Tile Z,X,Y " + str(Z) + " " + str(X) + " " + str(Y) + " seems out of bounds (404)")
-						else:
-							RetryCounter += 1
-							if (RetryCounter == MaxRetries):
-								Log(LogfileName, "Error: Failed to download tile Z,X,Y " + str(Z) + " " + str(X) + " " + str(Y))
-								Log(LogfileName, "Status:" + str(TileDownload.status_code))
-								Log(LogfileName, "URL:" + TileDownload.url)
-								Log(LogfileName, "Request headers:" + str(TileDownload.request.headers))
-								Log(LogfileName, "Response headers:" + str(TileDownload.headers))
-								Run = False 	# Currently no way to handle errors more gracefully - just stop the program and retry with next run.
+                            if len(VectorTiles) == WriteInterval:
+                                TotalTileCount = WriteToDB(
+                                    MBtilesDB, VectorTiles, LogfileName, TotalTileCount
+                                )
+                                VectorTiles = ()
+                                WriteGlobalStatus(
+                                    ProcessStateFile,
+                                    SourceCounter,
+                                    X,
+                                    Y,
+                                    Z,
+                                    TotalTileCount,
+                                )
+                        elif TileDownload.status_code == 404:
+                            RetryCounter += 1
+                            if RetryCounter == MaxRetries:
+                                Log(
+                                    LogfileName,
+                                    "Warning: Tile Z,X,Y "
+                                    + str(Z)
+                                    + " "
+                                    + str(X)
+                                    + " "
+                                    + str(Y)
+                                    + " seems out of bounds (404)",
+                                )
+                        else:
+                            RetryCounter += 1
+                            if RetryCounter == MaxRetries:
+                                Log(
+                                    LogfileName,
+                                    "Error: Failed to download tile Z,X,Y "
+                                    + str(Z)
+                                    + " "
+                                    + str(X)
+                                    + " "
+                                    + str(Y),
+                                )
+                                Log(
+                                    LogfileName,
+                                    "Status:" + str(TileDownload.status_code),
+                                )
+                                Log(LogfileName, "URL:" + TileDownload.url)
+                                Log(
+                                    LogfileName,
+                                    "Request headers:"
+                                    + str(TileDownload.request.headers),
+                                )
+                                Log(
+                                    LogfileName,
+                                    "Response headers:" + str(TileDownload.headers),
+                                )
+                                Run = False  # Currently no way to handle errors more gracefully - just stop the program and retry with next run.
 
-						if not Run:
-							break
+                        if not Run:
+                            break
 
-					if Run:
-						sleep(ReadSpacing)
-					else:
-						break
+                    if Run:
+                        sleep(ReadSpacing)
+                    else:
+                        break
 
-				if not Run:
-					break
+                if not Run:
+                    break
 
-			if not Run:
-				break
+            if not Run:
+                break
 
-		# On SIGTERM or SIGINT and after full loop save DB
-		if (len(VectorTiles) > 0):
-			TotalTileCount = WriteToDB(MBtilesDB, VectorTiles, LogfileName, TotalTileCount)
-		if (SessionTileCount > 0):
-			WriteGlobalStatus(ProcessStateFile, SourceCounter, X, Y, Z, TotalTileCount)
-		VectorTiles = ()
+        # On SIGTERM or SIGINT and after full loop save DB
+        if len(VectorTiles) > 0:
+            TotalTileCount = WriteToDB(
+                MBtilesDB, VectorTiles, LogfileName, TotalTileCount
+            )
+        if SessionTileCount > 0:
+            WriteGlobalStatus(ProcessStateFile, SourceCounter, X, Y, Z, TotalTileCount)
+        VectorTiles = ()
 
-		if Run:
-			FullLoops += 1
-			WriteMapStatus(MapStatusFile, FullLoops)
-			shutil.copy(MBtilesDB, MBtilesDB.replace(".mbtiles", str(FullLoops) + ".mbtiles"))
-			Log(LogfileName, "Whole area processed completely - copy created and start next mapsource.")
+        if Run:
+            FullLoops += 1
+            WriteMapStatus(MapStatusFile, FullLoops)
+            shutil.copy(
+                MBtilesDB, MBtilesDB.replace(".mbtiles", str(FullLoops) + ".mbtiles")
+            )
+            Log(
+                LogfileName,
+                "Whole area processed completely - copy created and start next mapsource.",
+            )
 
-			SourceCounter += 1
-			TotalTileCount = 0
-			MapRun = False
-			PickupDone = True
+            SourceCounter += 1
+            TotalTileCount = 0
+            MapRun = False
+            PickupDone = True
 
-			if SourceCounter >= len(MapSources):
-					if os.path.exists(ProcessStateFile):
-							os.remove(ProcessStateFile)
+            if SourceCounter >= len(MapSources):
+                if os.path.exists(ProcessStateFile):
+                    os.remove(ProcessStateFile)
 
-					Run = False
+                Run = False
 
 Log(LogfileName, "Shutdown received or error occured - graceful exit successfull.")
-Log (LogfileName, "------ Download ended at " + str(datetime.datetime.now()) + " after getting " + str(SessionTileCount) + " tiles. ------")
-
-
-
+Log(
+    LogfileName,
+    "------ Download ended at "
+    + str(datetime.datetime.now())
+    + " after getting "
+    + str(SessionTileCount)
+    + " tiles. ------",
+)
