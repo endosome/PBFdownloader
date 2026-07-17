@@ -43,11 +43,13 @@ import datetime
 import gzip
 import os
 import json
+import sqlite3
+
 
 ######## CONFIG start ######
 
 # Write to DB every X new tiles collected
-WriteInterval = 250		
+WriteInterval = 250
 
 # Files for storing the status
 ProcessStateFile = "./DownloadState.txt"
@@ -95,7 +97,7 @@ def WriteGlobalStatus(File, Source, X, Y, Z, TotalTileCount):
 		StatusFile.write(str(TotalTileCount) + "\n")
 		StatusFile.close()
 	print ("Updated Download State")
-	
+
 def ReadGlobalStatus(File):
 	with open(File, 'r') as StatusFile:
 		Source = int(StatusFile.readline())
@@ -105,7 +107,7 @@ def ReadGlobalStatus(File):
 		TotalTileCount = int(StatusFile.readline())
 		StatusFile.close()
 	return Status(Source = Source, X = X, Y = Y, Z = Z, TotalTileCount = TotalTileCount)
-	
+
 def WriteMapStatus(File, FullLoops):
 	with open(File, 'w') as StatusFile:
 		StatusFile.write(str(FullLoops) + "\n")
@@ -116,20 +118,42 @@ def ReadMapStatus(File):
 		FullLoops = int(StatusFile.readline())
 		StatusFile.close()
 	return FullLoops
-	
+
 def Log(LogfileName, Message):
 	print (Message)
 	with open(LogfileName, 'a') as Logfile:
 		Logfile.write(Message + "\n")
 		Logfile.close()
 
+def CountDatabaseTiles(database_file):
+    with sqlite3.connect(database_file) as connection:
+        result = connection.execute(
+            "SELECT COUNT(*) FROM tiles"
+        ).fetchone()
+
+    return result[0]
+
 def WriteToDB(DatabaseFile, TileList, LogfileName, TotalTileCount):
-	with MBtiles(DatabaseFile, mode='r+') as Database:
-		Database.write_tiles(TileList)
-		# write_tile includes DB close
-	TotalTileCount += len(TileList)
-	Log (LogfileName, "Added " + str(len(TileList)) + " tiles to the Database. (Total tiles collected: " + str(TotalTileCount) + ")")
-	return TotalTileCount
+    before_count = CountDatabaseTiles(DatabaseFile)
+
+    with MBtiles(DatabaseFile, mode="r+") as database:
+        database.write_tiles(TileList)
+
+    after_count = CountDatabaseTiles(DatabaseFile)
+    unique_added = after_count - before_count
+    overwritten = len(TileList) - unique_added
+
+    Log(
+        LogfileName,
+        (
+            f"Wrote {len(TileList)} downloaded tiles. "
+            f"New unique tiles: {unique_added}. "
+            f"Overwritten tiles: {overwritten}. "
+            f"Database total: {after_count}"
+        )
+    )
+
+    return after_count
 
 def handler_stop_signals(signum, frame):
     global Run
@@ -154,7 +178,7 @@ else:
 	PickupDone = True
 
 while Run:
-		
+
 	DownloadURL = Maplist[MapSources[SourceCounter]]["DownloadURL"]
 	ServerParts = Maplist[MapSources[SourceCounter]]["ServerParts"]
 	MBtilesDB = Maplist[MapSources[SourceCounter]]["MBtilesDB"]
@@ -204,36 +228,36 @@ while Run:
 		out.meta['bounds'] = str(BoundingBox[1]) + "," + str(BoundingBox[0]) + "," + str(BoundingBox[3]) + "," + str(BoundingBox[2])
 
 	while (MapRun and Run):
-		
+
 		Log(LogfileName, "Now processing " + MapSources[SourceCounter] + " (" + MBtilesDB + ")")
-		
+
 		for Z in range(min_z, max_z + 1):
 
 			# Coordinates for Google-style URLs
 			LowerLeft = deg2num(BoundingBox[0], BoundingBox[1], Z)
 			UpperRight = deg2num(BoundingBox[2], BoundingBox[3], Z)
-			
+
 			min_x = LowerLeft[0]
 			max_x = UpperRight[0]
 			min_y = UpperRight[1]
 			max_y = LowerLeft[1]
-			
+
 			# Google-Scheme to Mapbox/TMS Y is: Y_mapbox = 2^Z - 1 - Y_tms
 			Yconversion = 2 ** Z - 1
-			
+
 			NumberOfTiles = (max_x - min_x + 1) * (max_y - min_y + 1)
-			
+
 			WriteGlobalStatus(ProcessStateFile, SourceCounter, min_x, min_y, min_z, TotalTileCount)
-			
+
 			Log(LogfileName, "Will download Level " + str(Z) + " - number of tiles: " + str(NumberOfTiles))
-			
+
 			if PickupDone:
 				StartY = min_y
 			else:
 				StartY = PickupStatus.Y
-			
+
 			for Y in range(StartY, max_y + 1):
-				
+
 				if PickupDone:
 					StartX = min_x
 				else:
@@ -241,25 +265,25 @@ while Run:
 					PickupDone = True
 
 				for X in range(StartX, max_x + 1):
-					
+
 					RetryCounter = 0
-					
+
 					while (RetryCounter < MaxRetries):
 						ServerPart = ServerParts[ServerPartNumber]
 						ServerPartNumber += 1
 						if ServerPartNumber == NumberOfServerParts:
 							ServerPartNumber = 0
-						
+
 						URL = DownloadURL.replace("{server}", ServerPart).replace("{x}", str(X)).replace("{y}", str(Y)).replace("{z}", str(Z))
 						TileDownload = requests.get(URL, headers = headers)
-						
+
 						if (TileDownload.status_code == 200):
 							TileData = gzip.compress(TileDownload.content)
 							VectorTiles += (Tile(z = Z, x = X, y = Yconversion - Y, data = TileData),)
 							SessionTileCount += 1
-							
+
 							RetryCounter = MaxRetries   # Flag as done
-							
+
 							if (len(VectorTiles) == WriteInterval):
 								TotalTileCount = WriteToDB(MBtilesDB, VectorTiles, LogfileName, TotalTileCount)
 								VectorTiles = ()
@@ -267,7 +291,7 @@ while Run:
 						elif (TileDownload.status_code == 404):
 							RetryCounter += 1
 							if (RetryCounter == MaxRetries):
-								Log(LogfileName, "Warning: Tile Z,X,Y " + str(Z) + " " + str(X) + " " + str(Y) + " seems out of bounds (404)")						
+								Log(LogfileName, "Warning: Tile Z,X,Y " + str(Z) + " " + str(X) + " " + str(Y) + " seems out of bounds (404)")
 						else:
 							RetryCounter += 1
 							if (RetryCounter == MaxRetries):
@@ -280,12 +304,12 @@ while Run:
 
 						if not Run:
 							break
-					
+
 					if Run:
 						sleep(ReadSpacing)
 					else:
 						break
-						
+
 				if not Run:
 					break
 
@@ -298,21 +322,21 @@ while Run:
 		if (SessionTileCount > 0):
 			WriteGlobalStatus(ProcessStateFile, SourceCounter, X, Y, Z, TotalTileCount)
 		VectorTiles = ()
-		
+
 		if Run:
 			FullLoops += 1
 			WriteMapStatus(MapStatusFile, FullLoops)
 			shutil.copy(MBtilesDB, MBtilesDB.replace(".mbtiles", str(FullLoops) + ".mbtiles"))
 			Log(LogfileName, "Whole area processed completely - copy created and start next mapsource.")
-			
+
 			SourceCounter += 1
 			TotalTileCount = 0
 			MapRun = False
-			PickupDone = True 
-			
+			PickupDone = True
+
 			if (SourceCounter >= len(MapSources)):
 				SourceCounter = 0
-			
+
 Log(LogfileName, "Shutdown received or error occured - graceful exit successfull.")
 Log (LogfileName, "------ Download ended at " + str(datetime.datetime.now()) + " after getting " + str(SessionTileCount) + " tiles. ------")
 
