@@ -1,0 +1,32 @@
+{
+	"BasemapDE": {
+		"DownloadURL": "https://sgx.geodatenzentrum.de/gdz_basemapde_vektor/tiles/v2/bm_web_de_3857/{z}/{x}/{y}.pbf",
+		"BoundingBox": [47.2, 5.8, 55.1, 15.1],
+		"ServerParts": [""],
+		"MBtilesDB": "/mnt/SSD/maps/AutoMap/basemapDE.mbtiles",
+		"Name": "© GeoBasis-DE/BKG (2025) CC BY 4.0",
+		"min_z": 0,
+		"max_z": 14,
+		"ReadSpacing": 1
+	},
+	"BasemapDEcontour": {
+		"DownloadURL": "https://sgx.geodatenzentrum.de/gdz_basemapde_vektor/tiles/v2/bm_web_hl_de_3857/{z}/{x}/{y}.pbf",
+		"BoundingBox": [47.2, 5.8, 55.1, 15.1],
+		"ServerParts": [""],
+		"MBtilesDB": "/mnt/SSD/maps/AutoMap/basemap_contour.mbtiles",
+		"Name": "© GeoBasis-DE/BKG (2025) CC BY 4.0",
+		"min_z": 8,
+		"max_z": 14,
+		"ReadSpacing": 1
+	},
+	"SwissTopo": {
+		"DownloadURL": "https://vectortiles{server}.geo.admin.ch/tiles/ch.swisstopo.base.vt/v1.0.0/{z}/{x}/{y}.pbf",
+		"BoundingBox": [45.818, 5.9559, 47.8084, 10.4921],
+		"ServerParts": ["0", "1", "2", "3", "4"],
+		"MBtilesDB": "/mnt/SSD/maps/AutoMap/SwissTopo.mbtiles",
+		"Name": "© swisstopo, © EDA, © BAFU, © BABS, © SAC, © Naturfreunde Schweiz, © opentransportdata.swiss",
+		"min_z": 8,
+		"max_z": 14,
+		"ReadSpacing": 1.5
+	}
+}
