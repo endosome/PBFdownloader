@@ -11,26 +11,28 @@
 #
 # Map configuration is stored in a json file, with the following scheme:
 # {
-# 	"FreelyChosenMapName": {
-# 		"DownloadURL": "https://{server}.mapsource.tld/path/to/pbf/tiles/{z}/{x}/{y}/tile.pbf?any=get&var=needed",     # {server} is placeholder for serverparts (load balancing), {x}, {y} and {z} are placeholders for tile coordinate
-# 		"BoundingBox": [min_lon, min_lat, max_lon, max_lat],
-# 		"ServerParts": ["server1", "server2", ...],                                                         # may be empty, i.e. [""], if no {server} placeholder is present in DownloadURL
-# 		"MBtilesDB": "/path/to/your/MBtiles-file.mbtiles",
-# 		"Name": "Mapname in the MBtiles DB",
-# 		"min_z": 0,
-# 		"max_z": 14,
-# 		"RequestsPerSecond": 0.67,                                                                          # preferred target average request rate
-# 		"ReadSpacing": 1.5                                                                                  # legacy fallback if RequestsPerSecond is not configured
-# 	},
-#   "NextMap": {...},
-#   ...
+#     "FreelyChosenMapName": {
+#         "DownloadURL": "https://{server}.mapsource.tld/path/to/pbf/tiles/{z}/{x}/{y}/tile.pbf?any=get&var=needed",  # {server} is placeholder for serverparts (load balancing), {x}, {y} and {z} are placeholders for tile coordinate
+#         "BoundingBox": [min_lon, min_lat, max_lon, max_lat],
+#         "ServerParts": ["server1", "server2", ...],  # may be empty, i.e. [""], if no {server} placeholder is present in DownloadURL
+#         "MBtilesDB": "/path/to/your/MBtiles-file.mbtiles",
+#         "Name": "Mapname in the MBtiles DB",
+#         "min_z": 0,
+#         "max_z": 14,
+#         "RequestsPerSecond": 0.67,  # preferred target average request rate
+#         "ReadSpacing": 1.5  # legacy fallback if RequestsPerSecond is not configured
+#     },
+#     "NextMap": {...},
+#     ...
 # }
 #
 # Written by Hauke 2025+
 #
-# License: CC BY-SA 4.0 Attribution-ShareAlike 4.0 International (https://creativecommons.org/licenses/by-sa/4.0/)
+# License: CC BY-SA 4.0 Attribution-ShareAlike 4.0 International
+# (https://creativecommons.org/licenses/by-sa/4.0/)
 #
-# For a detailed description and instructions visit: https://projects.webvoss.de/2025/09/27/fair-use-download-of-large-vector-maps/
+# For a detailed description and instructions visit:
+# https://projects.webvoss.de/2025/09/27/fair-use-download-of-large-vector-maps/
 #
 
 import datetime
@@ -45,7 +47,6 @@ import subprocess
 import time
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from time import sleep
 from types import FrameType
 from typing import Any, NamedTuple, TypeAlias
 
@@ -55,33 +56,38 @@ import typer
 ######## CONFIG start ######
 
 # Write to DB every X new tiles collected
-WriteInterval: int = 250
+WRITE_INTERVAL: int = 250
 
 # Write a progress report every X seconds
-ProgressInterval: int = 10
+PROGRESS_INTERVAL: int = 10
 
-# Change 2: Randomize request intervals by this fraction to avoid perfectly periodic requests
-RequestJitterFraction: float = 0.20
+# Change 2: Randomize request intervals by this fraction to avoid perfectly
+# periodic requests
+REQUEST_JITTER_FRACTION: float = 0.20
 
 # Change 1: Stop individual HTTP requests from hanging indefinitely
-RequestTimeout: float = 30
+REQUEST_TIMEOUT: float = 30
 
 # Change 3: Default pause if a 429 response has no usable Retry-After header
-DefaultRetryAfter: float = 60
+DEFAULT_RETRY_AFTER: float = 60
 
-# Change 4: Ensure backoff retries are available even when only one server part is configured
-MinimumRequestAttempts: int = 3
+# Change 4: Ensure backoff retries are available even when only one server part
+# is configured
+MINIMUM_REQUEST_ATTEMPTS: int = 3
 
 # Change 4: Limit exponential retry backoff to a reasonable maximum
-MaximumRetryBackoff: float = 300
+MAXIMUM_RETRY_BACKOFF: float = 300
 
 # Files for storing the status
-ProcessStateFile: Path = Path("./DownloadState.txt")
-LogfileName: Path = Path("./download.log")
+PROCESS_STATE_FILE: Path = Path("./DownloadState.txt")
+LOGFILE_NAME: Path = Path("./download.log")
 
 # User Agent for the web requests - some services block non-browser user agents
-headers: dict[str, str] = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0"
+HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) "
+        "Gecko/20100101 Firefox/136.0"
+    )
 }
 
 ######## CONFIG end ######
@@ -93,84 +99,98 @@ TileBatch: TypeAlias = tuple[TileRecord, ...]
 
 
 class Status(NamedTuple):
-    Source: int
-    X: int
-    Y: int
-    Z: int
-    TotalTileCount: int
+    source: int
+    x: int
+    y: int
+    z: int
+    total_tile_count: int
 
 
-Run: bool = True
+run: bool = True
 
 ######## INIT end #######
 
 
-# From https://medium.com/@ty2/how-to-calculate-number-of-tiles-in-a-bounding-box-for-openstreetmaps-4bf8c3b767ac
-# And be aware of Y-axis deviation: https://github.com/mapbox/mbtiles-spec/blob/master/1.3/spec.md
-# Tile number check: https://labs.mapbox.com/what-the-tile/
-def deg2num(lat_deg: float, lon_deg: float, zoom: int) -> tuple[int, int]:
-    lat_rad: float = math.radians(lat_deg)
-    n: float = 2.0**zoom
-    xtile: int = int((lon_deg + 180.0) / 360.0 * n)
-    ytile: int = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) * n / 2.0)
-    return xtile, ytile
+# From:
+# https://medium.com/@ty2/how-to-calculate-number-of-tiles-in-a-bounding-box-for-openstreetmaps-4bf8c3b767ac
+#
+# And be aware of Y-axis deviation:
+# https://github.com/mapbox/mbtiles-spec/blob/master/1.3/spec.md
+#
+# Tile number check:
+# https://labs.mapbox.com/what-the-tile/
+def degrees_to_tile_number(
+    latitude_degrees: float,
+    longitude_degrees: float,
+    zoom: int,
+) -> tuple[int, int]:
+    latitude_radians: float = math.radians(latitude_degrees)
+    tile_count: float = 2.0**zoom
+
+    x_tile: int = int((longitude_degrees + 180.0) / 360.0 * tile_count)
+
+    y_tile: int = int(
+        (1.0 - math.asinh(math.tan(latitude_radians)) / math.pi) * tile_count / 2.0
+    )
+
+    return x_tile, y_tile
 
 
-def WriteGlobalStatus(
-    File: Path,
-    Source: int,
-    X: int,
-    Y: int,
-    Z: int,
-    TotalTileCount: int,
+def write_global_status(
+    file: Path,
+    source: int,
+    x: int,
+    y: int,
+    z: int,
+    total_tile_count: int,
 ) -> None:
-    with File.open("w") as StatusFile:
-        StatusFile.write(str(Source) + "\n")
-        StatusFile.write(str(Z) + "\n")
-        StatusFile.write(str(X) + "\n")
-        StatusFile.write(str(Y) + "\n")
-        StatusFile.write(str(TotalTileCount) + "\n")
+    with file.open("w") as status_file:
+        status_file.write(str(source) + "\n")
+        status_file.write(str(z) + "\n")
+        status_file.write(str(x) + "\n")
+        status_file.write(str(y) + "\n")
+        status_file.write(str(total_tile_count) + "\n")
 
     print("Updated Download State")
 
 
-def ReadGlobalStatus(File: Path) -> Status:
-    with File.open("r") as StatusFile:
-        Source: int = int(StatusFile.readline())
-        Z: int = int(StatusFile.readline())
-        X: int = int(StatusFile.readline())
-        Y: int = int(StatusFile.readline())
-        TotalTileCount: int = int(StatusFile.readline())
+def read_global_status(file: Path) -> Status:
+    with file.open("r") as status_file:
+        source: int = int(status_file.readline())
+        z: int = int(status_file.readline())
+        x: int = int(status_file.readline())
+        y: int = int(status_file.readline())
+        total_tile_count: int = int(status_file.readline())
 
     return Status(
-        Source=Source,
-        X=X,
-        Y=Y,
-        Z=Z,
-        TotalTileCount=TotalTileCount,
+        source=source,
+        x=x,
+        y=y,
+        z=z,
+        total_tile_count=total_tile_count,
     )
 
 
-def WriteMapStatus(File: Path, FullLoops: int) -> None:
-    with File.open("w") as StatusFile:
-        StatusFile.write(str(FullLoops) + "\n")
+def write_map_status(file: Path, full_loops: int) -> None:
+    with file.open("w") as status_file:
+        status_file.write(str(full_loops) + "\n")
 
 
-def ReadMapStatus(File: Path) -> int:
-    with File.open("r") as StatusFile:
-        FullLoops: int = int(StatusFile.readline())
+def read_map_status(file: Path) -> int:
+    with file.open("r") as status_file:
+        full_loops: int = int(status_file.readline())
 
-    return FullLoops
-
-
-def Log(LogfileName: Path, Message: str) -> None:
-    print(Message)
-
-    with LogfileName.open("a") as Logfile:
-        Logfile.write(Message + "\n")
+    return full_loops
 
 
-def CountDatabaseTiles(database_file: Path) -> int:
+def log(logfile_name: Path, message: str) -> None:
+    print(message)
+
+    with logfile_name.open("a") as logfile:
+        logfile.write(message + "\n")
+
+
+def count_database_tiles(database_file: Path) -> int:
     with sqlite3.connect(database_file) as connection:
         result: tuple[int] | None = connection.execute(
             "SELECT COUNT(*) FROM tiles"
@@ -182,13 +202,13 @@ def CountDatabaseTiles(database_file: Path) -> int:
     return result[0]
 
 
-def WriteToDB(
-    DatabaseFile: Path,
-    TileList: TileBatch,
-    LogfileName: Path,
-    TotalTileCount: int,
+def write_to_database(
+    database_file: Path,
+    tile_list: TileBatch,
+    logfile_name: Path,
+    total_tile_count: int,
 ) -> int:
-    with sqlite3.connect(DatabaseFile) as database:
+    with sqlite3.connect(database_file) as database:
         before_result: tuple[int] | None = database.execute(
             "SELECT COUNT(*) FROM tiles"
         ).fetchone()
@@ -201,7 +221,7 @@ def WriteToDB(
             (zoom_level, tile_column, tile_row, tile_data)
             VALUES (?, ?, ?, ?)
             """,
-            TileList,
+            tile_list,
         )
 
         after_result: tuple[int] | None = database.execute(
@@ -211,12 +231,12 @@ def WriteToDB(
         after_count: int = after_result[0] if after_result is not None else 0
 
     unique_added: int = after_count - before_count
-    overwritten: int = len(TileList) - unique_added
+    overwritten: int = len(tile_list) - unique_added
 
-    Log(
-        LogfileName,
+    log(
+        logfile_name,
         (
-            f"Wrote {len(TileList)} downloaded tiles. "
+            f"Wrote {len(tile_list)} downloaded tiles. "
             f"New unique tiles: {unique_added}. "
             f"Overwritten tiles: {overwritten}. "
             f"Database total: {after_count}"
@@ -227,64 +247,67 @@ def WriteToDB(
 
 
 # Change 2: Enforce the configured request rate and add random timing jitter
-def WaitForRequestSlot(
-    NextRequestTime: float,
-    BaseRequestSpacing: float,
+def wait_for_request_slot(
+    next_request_time: float,
+    base_request_spacing: float,
 ) -> float:
-    CurrentTime: float = time.monotonic()
+    current_time: float = time.monotonic()
 
-    if CurrentTime < NextRequestTime:
-        sleep(NextRequestTime - CurrentTime)
+    if current_time < next_request_time:
+        time.sleep(next_request_time - current_time)
 
-    RequestStartTime: float = time.monotonic()
+    request_start_time: float = time.monotonic()
 
-    JitterMultiplier: float = random.uniform(
-        1.0 - RequestJitterFraction,
-        1.0 + RequestJitterFraction,
+    jitter_multiplier: float = random.uniform(
+        1.0 - REQUEST_JITTER_FRACTION,
+        1.0 + REQUEST_JITTER_FRACTION,
     )
 
-    return RequestStartTime + BaseRequestSpacing * JitterMultiplier
+    return request_start_time + base_request_spacing * jitter_multiplier
 
 
 # Change 3: Support both numeric and HTTP-date Retry-After header values
-def ParseRetryAfter(RetryAfterValue: str | None) -> float:
-    if RetryAfterValue is None:
-        return DefaultRetryAfter
+def parse_retry_after(retry_after_value: str | None) -> float:
+    if retry_after_value is None:
+        return DEFAULT_RETRY_AFTER
 
     try:
-        return max(float(RetryAfterValue), 0)
+        return max(float(retry_after_value), 0)
     except (TypeError, ValueError):
         pass
 
     try:
-        RetryDate: datetime.datetime = parsedate_to_datetime(RetryAfterValue)
+        retry_date: datetime.datetime = parsedate_to_datetime(retry_after_value)
 
-        if RetryDate.tzinfo is None:
-            RetryDate = RetryDate.replace(tzinfo=datetime.timezone.utc)
+        if retry_date.tzinfo is None:
+            retry_date = retry_date.replace(tzinfo=datetime.timezone.utc)
 
-        CurrentDate: datetime.datetime = datetime.datetime.now(datetime.timezone.utc)
+        current_date: datetime.datetime = datetime.datetime.now(datetime.timezone.utc)
 
-        return max((RetryDate - CurrentDate).total_seconds(), 0)
+        return max(
+            (retry_date - current_date).total_seconds(),
+            0,
+        )
     except (TypeError, ValueError, OverflowError):
-        return DefaultRetryAfter
+        return DEFAULT_RETRY_AFTER
 
 
 # Change 4: Increase the pause exponentially after repeated transient failures
-def CalculateRetryBackoff(
-    BaseRequestSpacing: float,
-    RetryCounter: int,
+def calculate_retry_backoff(
+    base_request_spacing: float,
+    retry_counter: int,
 ) -> float:
-    BackoffSeconds: float = BaseRequestSpacing * (2 ** max(RetryCounter - 1, 0))
+    backoff_seconds: float = base_request_spacing * (2 ** max(retry_counter - 1, 0))
 
-    return min(BackoffSeconds, MaximumRetryBackoff)
+    return min(backoff_seconds, MAXIMUM_RETRY_BACKOFF)
 
 
-def handler_stop_signals(
+def handle_stop_signals(
     signum: int,
     frame: FrameType | None,
 ) -> None:
-    global Run
-    Run = False
+    global run
+    run = False
 
 
 ######## Procedures end #########
@@ -303,646 +326,695 @@ def main(
         help="Path to the map configuration JSON file.",
     ),
 ) -> None:
-    global Run
+    global run
 
     # CLI: Load the selected configuration file, defaulting to mapconfig.json
     with config.open("r") as json_data:
-        Maplist: MapConfig = json.load(json_data)
+        map_list: MapConfig = json.load(json_data)
 
-    MapSources: list[str] = list(Maplist.keys())
+    map_sources: list[str] = list(map_list.keys())
 
-    ServerPartNumber: int = 0
-    SessionTileCount: int = 0
-    TotalTileCount: int = 0
-    SourceCounter: int = 0
-    VectorTiles: TileBatch = ()
+    server_part_number: int = 0
+    session_tile_count: int = 0
+    total_tile_count: int = 0
+    source_counter: int = 0
+    vector_tiles: TileBatch = ()
 
-    Run = True
+    run = True
 
-    # Change 1: Reuse TCP/TLS connections instead of opening a new connection for every tile
-    RequestSession: requests.Session = requests.Session()
-    RequestSession.headers.update(headers)
+    # Change 1: Reuse TCP/TLS connections instead of opening a new connection
+    # for every tile
+    request_session: requests.Session = requests.Session()
+    request_session.headers.update(HEADERS)
 
-    Log(
-        LogfileName,
+    log(
+        LOGFILE_NAME,
         "------ Start at " + str(datetime.datetime.now()) + " ------",
     )
 
-    signal.signal(signal.SIGINT, handler_stop_signals)
-    signal.signal(signal.SIGTERM, handler_stop_signals)
+    signal.signal(signal.SIGINT, handle_stop_signals)
+    signal.signal(signal.SIGTERM, handle_stop_signals)
 
-    if ProcessStateFile.exists():
-        PickupStatus: Status = ReadGlobalStatus(ProcessStateFile)
+    if PROCESS_STATE_FILE.exists():
+        pickup_status: Status = read_global_status(PROCESS_STATE_FILE)
 
-        Log(
-            LogfileName,
+        log(
+            LOGFILE_NAME,
             "Pick up from S,Z,X,Y,T: "
-            + str(MapSources[PickupStatus.Source])
+            + str(map_sources[pickup_status.source])
             + " "
-            + str(PickupStatus.Z)
+            + str(pickup_status.z)
             + " "
-            + str(PickupStatus.X)
+            + str(pickup_status.x)
             + " "
-            + str(PickupStatus.Y)
+            + str(pickup_status.y)
             + " "
-            + str(PickupStatus.TotalTileCount),
+            + str(pickup_status.total_tile_count),
         )
 
-        min_z: int = PickupStatus.Z
-        TotalTileCount = PickupStatus.TotalTileCount
-        SourceCounter = PickupStatus.Source
-        PickupDone: bool = PickupStatus.X == 0
-        MapRun: bool = True
+        min_z: int = pickup_status.z
+        total_tile_count = pickup_status.total_tile_count
+        source_counter = pickup_status.source
+        pickup_done: bool = pickup_status.x == 0
+        map_run: bool = True
     else:
-        PickupDone = True
+        pickup_done = True
 
-    while Run:
-        SourceConfig: MapSourceConfig = Maplist[MapSources[SourceCounter]]
+    while run:
+        source_config: MapSourceConfig = map_list[map_sources[source_counter]]
 
-        DownloadURL: str = SourceConfig["DownloadURL"]
-        ServerParts: list[str] = SourceConfig["ServerParts"]
-        MBtilesDB: Path = Path(SourceConfig["MBtilesDB"])
-        MapName: str = SourceConfig["Name"]
-        max_z: int = SourceConfig["max_z"]
-        BoundingBox: list[float] = SourceConfig["BoundingBox"]
-        min_z0: int = SourceConfig["min_z"]
+        download_url: str = source_config["DownloadURL"]
+        server_parts: list[str] = source_config["ServerParts"]
+        mbtiles_database: Path = Path(source_config["MBtilesDB"])
+        map_name: str = source_config["Name"]
+        max_z: int = source_config["max_z"]
+        bounding_box: list[float] = source_config["BoundingBox"]
+        min_z_default: int = source_config["min_z"]
 
-        # Change 5: Prefer an explicit requests-per-second setting, with ReadSpacing as a legacy fallback
-        if "RequestsPerSecond" in SourceConfig:
-            RequestsPerSecond: float = float(SourceConfig["RequestsPerSecond"])
+        # Change 5: Prefer an explicit requests-per-second setting, with
+        # ReadSpacing as a legacy fallback
+        if "RequestsPerSecond" in source_config:
+            requests_per_second: float = float(source_config["RequestsPerSecond"])
 
-            if RequestsPerSecond <= 0:
+            if requests_per_second <= 0:
                 raise ValueError("RequestsPerSecond must be greater than zero")
 
-            ReadSpacing: float = 1.0 / RequestsPerSecond
+            read_spacing: float = 1.0 / requests_per_second
         else:
-            ReadSpacing = float(SourceConfig["ReadSpacing"])
+            read_spacing = float(source_config["ReadSpacing"])
 
-            if ReadSpacing <= 0:
+            if read_spacing <= 0:
                 raise ValueError("ReadSpacing must be greater than zero")
 
-            RequestsPerSecond = 1.0 / ReadSpacing
+            requests_per_second = 1.0 / read_spacing
 
-        MapStatusFile: Path = Path(".") / (MapSources[SourceCounter] + "_status.txt")
-
-        if MapStatusFile.exists():
-            FullLoops: int = ReadMapStatus(MapStatusFile)
-        else:
-            FullLoops = 0
-
-        if PickupDone:
-            min_z = min_z0
-
-        MapRun = True
-
-        NumberOfServerParts: int = len(ServerParts)
-
-        # Change 4: Use at least three attempts so backoff also works with a single server
-        MaxRetries: int = max(
-            NumberOfServerParts,
-            MinimumRequestAttempts,
+        map_status_file: Path = Path(".") / (
+            map_sources[source_counter] + "_status.txt"
         )
 
-        # Change 5: Track the next permitted request start time for this map source
-        NextRequestTime: float = time.monotonic()
+        if map_status_file.exists():
+            full_loops: int = read_map_status(map_status_file)
+        else:
+            full_loops = 0
 
-        Log(
-            LogfileName,
+        if pickup_done:
+            min_z = min_z_default
+
+        map_run = True
+
+        number_of_server_parts: int = len(server_parts)
+
+        # Change 4: Use at least three attempts so backoff also works with a
+        # single server
+        max_retries: int = max(
+            number_of_server_parts,
+            MINIMUM_REQUEST_ATTEMPTS,
+        )
+
+        # Change 5: Track the next permitted request start time for this map
+        # source
+        next_request_time: float = time.monotonic()
+
+        log(
+            LOGFILE_NAME,
             (
-                f"Request rate: {RequestsPerSecond:.3f} requests/s "
-                f"(base spacing {ReadSpacing:.3f}s, "
-                f"jitter ±{RequestJitterFraction * 100:.0f}%)"
+                f"Request rate: {requests_per_second:.3f} requests/s "
+                f"(base spacing {read_spacing:.3f}s, "
+                f"jitter ±{REQUEST_JITTER_FRACTION * 100:.0f}%)"
             ),
         )
 
         ### For Debugging
-        # 	print(DownloadURL)
-        # 	print(ServerParts)
-        # 	print(MBtilesDB)
-        # 	print(MapName)
-        # 	print(max_z)
-        # 	print(min_z0)
-        # 	print(min_z)
-        # 	print(BoundingBox)
-        # 	print(ReadSpacing)
-        # 	print(MapStatusFile)
-        # 	print(NumberOfServerParts)
-        # 	print(MaxRetries)
-        # 	print(FullLoops)
+        # print(download_url)
+        # print(server_parts)
+        # print(mbtiles_database)
+        # print(map_name)
+        # print(max_z)
+        # print(min_z_default)
+        # print(min_z)
+        # print(bounding_box)
+        # print(read_spacing)
+        # print(map_status_file)
+        # print(number_of_server_parts)
+        # print(max_retries)
+        # print(full_loops)
 
-        with sqlite3.connect(MBtilesDB) as out:
-            out.execute("""
+        with sqlite3.connect(mbtiles_database) as output_database:
+            output_database.execute("""
                 CREATE TABLE IF NOT EXISTS metadata (
                     name TEXT NOT NULL PRIMARY KEY,
                     value TEXT
                 )
                 """)
 
-            out.execute("""
+            output_database.execute("""
                 CREATE TABLE IF NOT EXISTS tiles (
                     zoom_level INTEGER NOT NULL,
                     tile_column INTEGER NOT NULL,
                     tile_row INTEGER NOT NULL,
                     tile_data BLOB NOT NULL,
-                    PRIMARY KEY (zoom_level, tile_column, tile_row)
+                    PRIMARY KEY (
+                        zoom_level,
+                        tile_column,
+                        tile_row
+                    )
                 )
                 """)
 
-            out.executemany(
+            output_database.executemany(
                 """
                 INSERT OR REPLACE INTO metadata (name, value)
                 VALUES (?, ?)
                 """,
                 (
-                    ("name", MapName),
+                    ("name", map_name),
                     ("format", "pbf"),
                     ("crs", "EPSG:3857"),
-                    ("minzoom", str(min_z0)),
+                    ("minzoom", str(min_z_default)),
                     ("maxzoom", str(max_z)),
                     # MBTiles 1.3 specification requires bounds in this order:
                     # left, bottom, right, top
                     # which corresponds to:
-                    # west longitude, south latitude, east longitude, north latitude
-                    ("bounds", ",".join(str(value) for value in BoundingBox)),
+                    # west longitude, south latitude, east longitude,
+                    # north latitude
+                    (
+                        "bounds",
+                        ",".join(str(value) for value in bounding_box),
+                    ),
                 ),
             )
 
-        TotalTilesToProcess: int = 0
+        total_tiles_to_process: int = 0
 
-        for ProgressZ in range(min_z, max_z + 1):
-            ProgressLowerLeft: tuple[int, int] = deg2num(
-                BoundingBox[1],
-                BoundingBox[0],
-                ProgressZ,
+        for progress_z in range(min_z, max_z + 1):
+            progress_lower_left: tuple[int, int] = degrees_to_tile_number(
+                bounding_box[1],
+                bounding_box[0],
+                progress_z,
             )
 
-            ProgressUpperRight: tuple[int, int] = deg2num(
-                BoundingBox[3],
-                BoundingBox[2],
-                ProgressZ,
+            progress_upper_right: tuple[int, int] = degrees_to_tile_number(
+                bounding_box[3],
+                bounding_box[2],
+                progress_z,
             )
 
-            ProgressMinX: int = ProgressLowerLeft[0]
-            ProgressMaxX: int = ProgressUpperRight[0]
-            ProgressMinY: int = ProgressUpperRight[1]
-            ProgressMaxY: int = ProgressLowerLeft[1]
+            progress_min_x: int = progress_lower_left[0]
+            progress_max_x: int = progress_upper_right[0]
+            progress_min_y: int = progress_upper_right[1]
+            progress_max_y: int = progress_lower_left[1]
 
-            ProgressWidth: int = ProgressMaxX - ProgressMinX + 1
+            progress_width: int = progress_max_x - progress_min_x + 1
 
-            if not PickupDone and ProgressZ == PickupStatus.Z:
-                TotalTilesToProcess += (
-                    ProgressMaxY - PickupStatus.Y
-                ) * ProgressWidth + (ProgressMaxX - PickupStatus.X + 1)
+            if not pickup_done and progress_z == pickup_status.z:
+                total_tiles_to_process += (
+                    progress_max_y - pickup_status.y
+                ) * progress_width + (progress_max_x - pickup_status.x + 1)
             else:
-                TotalTilesToProcess += ProgressWidth * (ProgressMaxY - ProgressMinY + 1)
+                total_tiles_to_process += progress_width * (
+                    progress_max_y - progress_min_y + 1
+                )
 
-        OverallTilesProcessed: int = 0
-        SuccessfulTilesThisMap: int = 0
-        MissingTilesThisMap: int = 0
-        ProgressStartTime: float = time.monotonic()
-        LastProgressTime: float = ProgressStartTime
+        overall_tiles_processed: int = 0
+        successful_tiles_this_map: int = 0
+        missing_tiles_this_map: int = 0
+        progress_start_time: float = time.monotonic()
+        last_progress_time: float = progress_start_time
 
-        Log(
-            LogfileName,
-            "Total tiles scheduled for this run: " + str(TotalTilesToProcess),
+        log(
+            LOGFILE_NAME,
+            "Total tiles scheduled for this run: " + str(total_tiles_to_process),
         )
 
-        while MapRun and Run:
-            Log(
-                LogfileName,
+        while map_run and run:
+            log(
+                LOGFILE_NAME,
                 "Now processing "
-                + MapSources[SourceCounter]
+                + map_sources[source_counter]
                 + " ("
-                + str(MBtilesDB)
+                + str(mbtiles_database)
                 + ")",
             )
 
-            for Z in range(min_z, max_z + 1):
+            for z in range(min_z, max_z + 1):
                 # Coordinates for Google-style URLs
-                LowerLeft: tuple[int, int] = deg2num(
-                    BoundingBox[1],
-                    BoundingBox[0],
-                    Z,  # min latitude  # min longitude
+                lower_left: tuple[int, int] = degrees_to_tile_number(
+                    bounding_box[1],
+                    bounding_box[0],
+                    z,  # min latitude  # min longitude
                 )
 
-                UpperRight: tuple[int, int] = deg2num(
-                    BoundingBox[3],
-                    BoundingBox[2],
-                    Z,  # max latitude  # max longitude
+                upper_right: tuple[int, int] = degrees_to_tile_number(
+                    bounding_box[3],
+                    bounding_box[2],
+                    z,  # max latitude  # max longitude
                 )
 
-                min_x: int = LowerLeft[0]
-                max_x: int = UpperRight[0]
-                min_y: int = UpperRight[1]
-                max_y: int = LowerLeft[1]
+                min_x: int = lower_left[0]
+                max_x: int = upper_right[0]
+                min_y: int = upper_right[1]
+                max_y: int = lower_left[1]
 
-                # Google-Scheme to Mapbox/TMS Y is: Y_mapbox = 2^Z - 1 - Y_tms
-                Yconversion: int = 2**Z - 1
+                # Google-Scheme to Mapbox/TMS Y is:
+                # Y_mapbox = 2^Z - 1 - Y_tms
+                y_conversion: int = 2**z - 1
 
-                NumberOfTiles: int = (max_x - min_x + 1) * (max_y - min_y + 1)
+                number_of_tiles: int = (max_x - min_x + 1) * (max_y - min_y + 1)
 
-                WriteGlobalStatus(
-                    ProcessStateFile,
-                    SourceCounter,
+                write_global_status(
+                    PROCESS_STATE_FILE,
+                    source_counter,
                     min_x,
                     min_y,
-                    Z,
-                    TotalTileCount,
+                    z,
+                    total_tile_count,
                 )
 
-                LevelPickup: bool = not PickupDone
+                level_pickup: bool = not pickup_done
 
-                if PickupDone:
-                    StartY: int = min_y
-                    LevelTilesToProcess: int = NumberOfTiles
+                if pickup_done:
+                    start_y: int = min_y
+                    level_tiles_to_process: int = number_of_tiles
                 else:
-                    StartY = PickupStatus.Y
-                    LevelTilesToProcess = (max_y - PickupStatus.Y) * (
+                    start_y = pickup_status.y
+                    level_tiles_to_process = (max_y - pickup_status.y) * (
                         max_x - min_x + 1
-                    ) + (max_x - PickupStatus.X + 1)
+                    ) + (max_x - pickup_status.x + 1)
 
-                LevelTilesProcessed: int = 0
+                level_tiles_processed: int = 0
 
-                Log(
-                    LogfileName,
+                log(
+                    LOGFILE_NAME,
                     "Will download Level "
-                    + str(Z)
+                    + str(z)
                     + " - number of tiles: "
-                    + str(NumberOfTiles)
+                    + str(number_of_tiles)
                     + (
-                        " - remaining this run: " + str(LevelTilesToProcess)
-                        if LevelPickup
+                        " - remaining this run: " + str(level_tiles_to_process)
+                        if level_pickup
                         else ""
                     ),
                 )
 
-                for Y in range(StartY, max_y + 1):
-                    if PickupDone:
-                        StartX: int = min_x
+                for y in range(start_y, max_y + 1):
+                    if pickup_done:
+                        start_x: int = min_x
                     else:
-                        StartX = PickupStatus.X
-                        PickupDone = True
+                        start_x = pickup_status.x
+                        pickup_done = True
 
-                    for X in range(StartX, max_x + 1):
-                        RetryCounter: int = 0
-                        TileDownloadedSuccessfully: bool = False
-                        TileMissing: bool = False
+                    for x in range(start_x, max_x + 1):
+                        retry_counter: int = 0
+                        tile_downloaded_successfully: bool = False
+                        tile_missing: bool = False
 
-                        while RetryCounter < MaxRetries:
-                            ServerPart: str = ServerParts[ServerPartNumber]
-                            ServerPartNumber += 1
+                        while retry_counter < max_retries:
+                            server_part: str = server_parts[server_part_number]
 
-                            if ServerPartNumber == NumberOfServerParts:
-                                ServerPartNumber = 0
+                            server_part_number += 1
 
-                            URL: str = (
-                                DownloadURL.replace(
+                            if server_part_number == number_of_server_parts:
+                                server_part_number = 0
+
+                            url: str = (
+                                download_url.replace(
                                     "{server}",
-                                    ServerPart,
+                                    server_part,
                                 )
-                                .replace("{x}", str(X))
-                                .replace("{y}", str(Y))
-                                .replace("{z}", str(Z))
+                                .replace("{x}", str(x))
+                                .replace("{y}", str(y))
+                                .replace("{z}", str(z))
                             )
 
-                            # Change 2: Apply rate limiting and jitter before every attempt, including retries
-                            NextRequestTime = WaitForRequestSlot(
-                                NextRequestTime,
-                                ReadSpacing,
+                            # Change 2: Apply rate limiting and jitter before
+                            # every attempt, including retries
+                            next_request_time = wait_for_request_slot(
+                                next_request_time,
+                                read_spacing,
                             )
 
                             try:
-                                # Change 1: Use the shared session and a finite request timeout
-                                TileDownload: requests.Response = RequestSession.get(
-                                    URL,
-                                    timeout=RequestTimeout,
+                                # Change 1: Use the shared session and a finite
+                                # request timeout
+                                tile_download: requests.Response = request_session.get(
+                                    url,
+                                    timeout=REQUEST_TIMEOUT,
                                 )
-                            except requests.RequestException as RequestError:
-                                RetryCounter += 1
+                            except requests.RequestException as request_error:
+                                retry_counter += 1
 
-                                if RetryCounter == MaxRetries:
-                                    Log(
-                                        LogfileName,
-                                        "Error: Failed to download tile Z,X,Y "
-                                        + str(Z)
-                                        + " "
-                                        + str(X)
-                                        + " "
-                                        + str(Y),
+                                if retry_counter == max_retries:
+                                    log(
+                                        LOGFILE_NAME,
+                                        (
+                                            "Error: Failed to download tile "
+                                            "Z,X,Y "
+                                            + str(z)
+                                            + " "
+                                            + str(x)
+                                            + " "
+                                            + str(y)
+                                        ),
                                     )
 
-                                    Log(
-                                        LogfileName,
-                                        "Request error: " + str(RequestError),
+                                    log(
+                                        LOGFILE_NAME,
+                                        "Request error: " + str(request_error),
                                     )
 
-                                    Log(LogfileName, "URL:" + URL)
-                                    Run = False
+                                    log(
+                                        LOGFILE_NAME,
+                                        "URL:" + url,
+                                    )
+
+                                    run = False
                                 else:
-                                    # Change 4: Back off exponentially after transient request failures
-                                    BackoffSeconds: float = CalculateRetryBackoff(
-                                        ReadSpacing,
-                                        RetryCounter,
+                                    # Change 4: Back off exponentially after
+                                    # transient request failures
+                                    backoff_seconds: float = calculate_retry_backoff(
+                                        read_spacing,
+                                        retry_counter,
                                     )
 
-                                    Log(
-                                        LogfileName,
+                                    log(
+                                        LOGFILE_NAME,
                                         (
                                             "Request error for tile Z,X,Y "
-                                            + str(Z)
+                                            + str(z)
                                             + " "
-                                            + str(X)
+                                            + str(x)
                                             + " "
-                                            + str(Y)
+                                            + str(y)
                                             + ". Retrying in "
-                                            + f"{BackoffSeconds:.1f}"
+                                            + f"{backoff_seconds:.1f}"
                                             + " seconds."
                                         ),
                                     )
 
-                                    sleep(BackoffSeconds)
+                                    time.sleep(backoff_seconds)
 
-                                if not Run:
+                                if not run:
                                     break
 
                                 continue
 
-                            if TileDownload.status_code == 200:
-                                TileData: bytes = gzip.compress(TileDownload.content)
+                            if tile_download.status_code == 200:
+                                tile_data: bytes = gzip.compress(tile_download.content)
 
-                                VectorTiles += (
+                                vector_tiles += (
                                     (
-                                        Z,
-                                        X,
-                                        Yconversion - Y,
-                                        TileData,
+                                        z,
+                                        x,
+                                        y_conversion - y,
+                                        tile_data,
                                     ),
                                 )
 
-                                SessionTileCount += 1
-                                SuccessfulTilesThisMap += 1
-                                TileDownloadedSuccessfully = True
+                                session_tile_count += 1
+                                successful_tiles_this_map += 1
+                                tile_downloaded_successfully = True
 
-                                RetryCounter = MaxRetries  # Flag as done
+                                # Flag as done
+                                retry_counter = max_retries
 
-                                if len(VectorTiles) == WriteInterval:
-                                    TotalTileCount = WriteToDB(
-                                        MBtilesDB,
-                                        VectorTiles,
-                                        LogfileName,
-                                        TotalTileCount,
+                                if len(vector_tiles) == WRITE_INTERVAL:
+                                    total_tile_count = write_to_database(
+                                        mbtiles_database,
+                                        vector_tiles,
+                                        LOGFILE_NAME,
+                                        total_tile_count,
                                     )
 
-                                    VectorTiles = ()
+                                    vector_tiles = ()
 
-                                    WriteGlobalStatus(
-                                        ProcessStateFile,
-                                        SourceCounter,
-                                        X,
-                                        Y,
-                                        Z,
-                                        TotalTileCount,
+                                    write_global_status(
+                                        PROCESS_STATE_FILE,
+                                        source_counter,
+                                        x,
+                                        y,
+                                        z,
+                                        total_tile_count,
                                     )
 
-                            # Change 3: Respect server-provided Retry-After delays when rate limited
-                            elif TileDownload.status_code == 429:
-                                RetryCounter += 1
+                            # Change 3: Respect server-provided Retry-After
+                            # delays when rate limited
+                            elif tile_download.status_code == 429:
+                                retry_counter += 1
 
-                                RetryAfterSeconds: float = ParseRetryAfter(
-                                    TileDownload.headers.get("Retry-After")
+                                retry_after_seconds: float = parse_retry_after(
+                                    tile_download.headers.get("Retry-After")
                                 )
 
-                                if RetryCounter == MaxRetries:
-                                    Log(
-                                        LogfileName,
-                                        "Error: Rate limit persisted for tile Z,X,Y "
-                                        + str(Z)
-                                        + " "
-                                        + str(X)
-                                        + " "
-                                        + str(Y),
+                                if retry_counter == max_retries:
+                                    log(
+                                        LOGFILE_NAME,
+                                        (
+                                            "Error: Rate limit persisted for "
+                                            "tile Z,X,Y "
+                                            + str(z)
+                                            + " "
+                                            + str(x)
+                                            + " "
+                                            + str(y)
+                                        ),
                                     )
 
-                                    Log(
-                                        LogfileName,
-                                        "Status:" + str(TileDownload.status_code),
+                                    log(
+                                        LOGFILE_NAME,
+                                        "Status:" + str(tile_download.status_code),
                                     )
 
-                                    Log(
-                                        LogfileName,
-                                        "URL:" + TileDownload.url,
+                                    log(
+                                        LOGFILE_NAME,
+                                        "URL:" + tile_download.url,
                                     )
 
-                                    Log(
-                                        LogfileName,
-                                        "Response headers:" + str(TileDownload.headers),
+                                    log(
+                                        LOGFILE_NAME,
+                                        "Response headers:"
+                                        + str(tile_download.headers),
                                     )
 
-                                    Run = False
+                                    run = False
                                 else:
-                                    Log(
-                                        LogfileName,
+                                    log(
+                                        LOGFILE_NAME,
                                         (
                                             "Rate limited for tile Z,X,Y "
-                                            + str(Z)
+                                            + str(z)
                                             + " "
-                                            + str(X)
+                                            + str(x)
                                             + " "
-                                            + str(Y)
+                                            + str(y)
                                             + ". Retrying in "
-                                            + f"{RetryAfterSeconds:.1f}"
+                                            + (f"{retry_after_seconds:.1f}")
                                             + " seconds."
                                         ),
                                     )
 
-                                    sleep(RetryAfterSeconds)
+                                    time.sleep(retry_after_seconds)
 
-                            elif TileDownload.status_code == 404:
-                                RetryCounter += 1
+                            elif tile_download.status_code == 404:
+                                retry_counter += 1
 
-                                if RetryCounter == MaxRetries:
-                                    TileMissing = True
-                                    MissingTilesThisMap += 1
+                                if retry_counter == max_retries:
+                                    tile_missing = True
+                                    missing_tiles_this_map += 1
 
-                                    Log(
-                                        LogfileName,
-                                        "Warning: Tile Z,X,Y "
-                                        + str(Z)
-                                        + " "
-                                        + str(X)
-                                        + " "
-                                        + str(Y)
-                                        + " seems out of bounds (404)",
+                                    log(
+                                        LOGFILE_NAME,
+                                        (
+                                            "Warning: Tile Z,X,Y "
+                                            + str(z)
+                                            + " "
+                                            + str(x)
+                                            + " "
+                                            + str(y)
+                                            + (" seems out of bounds " "(404)")
+                                        ),
                                     )
 
                             else:
-                                RetryCounter += 1
+                                retry_counter += 1
 
-                                if RetryCounter == MaxRetries:
-                                    Log(
-                                        LogfileName,
-                                        "Error: Failed to download tile Z,X,Y "
-                                        + str(Z)
-                                        + " "
-                                        + str(X)
-                                        + " "
-                                        + str(Y),
+                                if retry_counter == max_retries:
+                                    log(
+                                        LOGFILE_NAME,
+                                        (
+                                            "Error: Failed to download tile "
+                                            "Z,X,Y "
+                                            + str(z)
+                                            + " "
+                                            + str(x)
+                                            + " "
+                                            + str(y)
+                                        ),
                                     )
 
-                                    Log(
-                                        LogfileName,
-                                        "Status:" + str(TileDownload.status_code),
+                                    log(
+                                        LOGFILE_NAME,
+                                        "Status:" + str(tile_download.status_code),
                                     )
 
-                                    Log(
-                                        LogfileName,
-                                        "URL:" + TileDownload.url,
+                                    log(
+                                        LOGFILE_NAME,
+                                        "URL:" + tile_download.url,
                                     )
 
-                                    Log(
-                                        LogfileName,
+                                    log(
+                                        LOGFILE_NAME,
                                         "Request headers:"
-                                        + str(TileDownload.request.headers),
+                                        + str(tile_download.request.headers),
                                     )
 
-                                    Log(
-                                        LogfileName,
-                                        "Response headers:" + str(TileDownload.headers),
+                                    log(
+                                        LOGFILE_NAME,
+                                        "Response headers:"
+                                        + str(tile_download.headers),
                                     )
 
-                                    Run = False  # Currently no way to handle errors more gracefully - just stop the program and retry with next run.
+                                    # Currently no way to handle errors more
+                                    # gracefully - just stop the program and
+                                    # retry with next run.
+                                    run = False
                                 else:
-                                    # Change 4: Back off exponentially before retrying other HTTP errors
-                                    BackoffSeconds = CalculateRetryBackoff(
-                                        ReadSpacing,
-                                        RetryCounter,
+                                    # Change 4: Back off exponentially before
+                                    # retrying other HTTP errors
+                                    backoff_seconds = calculate_retry_backoff(
+                                        read_spacing,
+                                        retry_counter,
                                     )
 
-                                    Log(
-                                        LogfileName,
+                                    log(
+                                        LOGFILE_NAME,
                                         (
                                             "HTTP "
-                                            + str(TileDownload.status_code)
+                                            + str(tile_download.status_code)
                                             + " for tile Z,X,Y "
-                                            + str(Z)
+                                            + str(z)
                                             + " "
-                                            + str(X)
+                                            + str(x)
                                             + " "
-                                            + str(Y)
+                                            + str(y)
                                             + ". Retrying in "
-                                            + f"{BackoffSeconds:.1f}"
+                                            + f"{backoff_seconds:.1f}"
                                             + " seconds."
                                         ),
                                     )
 
-                                    sleep(BackoffSeconds)
+                                    time.sleep(backoff_seconds)
 
-                            if not Run:
+                            if not run:
                                 break
 
-                        LevelTilesProcessed += 1
-                        OverallTilesProcessed += 1
+                        level_tiles_processed += 1
+                        overall_tiles_processed += 1
 
-                        CurrentTime: float = time.monotonic()
+                        current_time: float = time.monotonic()
 
                         if (
-                            CurrentTime - LastProgressTime >= ProgressInterval
-                            or LevelTilesProcessed == LevelTilesToProcess
-                            or not Run
+                            current_time - last_progress_time >= PROGRESS_INTERVAL
+                            or level_tiles_processed == level_tiles_to_process
+                            or not run
                         ):
-                            ElapsedSeconds: float = CurrentTime - ProgressStartTime
+                            elapsed_seconds: float = current_time - progress_start_time
 
-                            if ElapsedSeconds > 0:
-                                ProcessingSpeed: float = (
-                                    OverallTilesProcessed / ElapsedSeconds
+                            if elapsed_seconds > 0:
+                                processing_speed: float = (
+                                    overall_tiles_processed / elapsed_seconds
                                 )
                             else:
-                                ProcessingSpeed = 0
+                                processing_speed = 0
 
-                            RemainingTiles: int = max(
-                                TotalTilesToProcess - OverallTilesProcessed,
+                            remaining_tiles: int = max(
+                                total_tiles_to_process - overall_tiles_processed,
                                 0,
                             )
 
-                            if ProcessingSpeed > 0:
-                                ETASeconds: float = RemainingTiles / ProcessingSpeed
+                            if processing_speed > 0:
+                                eta_seconds: float = remaining_tiles / processing_speed
 
-                                ETAString: str = str(
-                                    datetime.timedelta(seconds=int(ETASeconds))
+                                eta_string: str = str(
+                                    datetime.timedelta(seconds=int(eta_seconds))
                                 )
                             else:
-                                ETAString = "unknown"
+                                eta_string = "unknown"
 
-                            if LevelTilesToProcess > 0:
-                                LevelPercent: float = (
-                                    LevelTilesProcessed / LevelTilesToProcess * 100
+                            if level_tiles_to_process > 0:
+                                level_percent: float = (
+                                    level_tiles_processed / level_tiles_to_process * 100
                                 )
                             else:
-                                LevelPercent = 100
+                                level_percent = 100
 
-                            if TotalTilesToProcess > 0:
-                                OverallPercent: float = (
-                                    OverallTilesProcessed / TotalTilesToProcess * 100
+                            if total_tiles_to_process > 0:
+                                overall_percent: float = (
+                                    overall_tiles_processed
+                                    / total_tiles_to_process
+                                    * 100
                                 )
                             else:
-                                OverallPercent = 100
+                                overall_percent = 100
 
-                            Log(
-                                LogfileName,
+                            log(
+                                LOGFILE_NAME,
                                 (
                                     f"{datetime.datetime.now():%H:%M:%S} | "
-                                    f"z{Z} "
-                                    f"{LevelTilesProcessed}/"
-                                    f"{LevelTilesToProcess} "
-                                    f"({LevelPercent:.1f}%) | "
+                                    f"z{z} "
+                                    f"{level_tiles_processed}/"
+                                    f"{level_tiles_to_process} "
+                                    f"({level_percent:.1f}%) | "
                                     f"overall "
-                                    f"{OverallTilesProcessed}/"
-                                    f"{TotalTilesToProcess} "
-                                    f"({OverallPercent:.1f}%) | "
+                                    f"{overall_tiles_processed}/"
+                                    f"{total_tiles_to_process} "
+                                    f"({overall_percent:.1f}%) | "
                                     f"downloaded "
-                                    f"{SuccessfulTilesThisMap} | "
+                                    f"{successful_tiles_this_map} | "
                                     f"missing "
-                                    f"{MissingTilesThisMap} | "
-                                    f"{ProcessingSpeed:.2f} tiles/s | "
-                                    f"ETA {ETAString}"
+                                    f"{missing_tiles_this_map} | "
+                                    f"{processing_speed:.2f} tiles/s | "
+                                    f"ETA {eta_string}"
                                 ),
                             )
 
-                            LastProgressTime = CurrentTime
+                            last_progress_time = current_time
 
-                        if not Run:
+                        if not run:
                             break
 
-                    if not Run:
+                    if not run:
                         break
 
-                if not Run:
+                if not run:
                     break
 
             # On SIGTERM or SIGINT and after full loop save DB
-            if len(VectorTiles) > 0:
-                TotalTileCount = WriteToDB(
-                    MBtilesDB,
-                    VectorTiles,
-                    LogfileName,
-                    TotalTileCount,
+            if len(vector_tiles) > 0:
+                total_tile_count = write_to_database(
+                    mbtiles_database,
+                    vector_tiles,
+                    LOGFILE_NAME,
+                    total_tile_count,
                 )
 
-            if SessionTileCount > 0:
-                WriteGlobalStatus(
-                    ProcessStateFile,
-                    SourceCounter,
-                    X,
-                    Y,
-                    Z,
-                    TotalTileCount,
+            if session_tile_count > 0:
+                write_global_status(
+                    PROCESS_STATE_FILE,
+                    source_counter,
+                    x,
+                    y,
+                    z,
+                    total_tile_count,
                 )
 
-            VectorTiles = ()
+            vector_tiles = ()
 
-            if Run:
-                FullLoops += 1
-                WriteMapStatus(MapStatusFile, FullLoops)
+            if run:
+                full_loops += 1
+                write_map_status(
+                    map_status_file,
+                    full_loops,
+                )
 
                 subprocess.run(
                     [
@@ -950,46 +1022,52 @@ def main(
                         "validate",
                         "--agg-hash",
                         "update",
-                        str(MBtilesDB),
+                        str(mbtiles_database),
                     ],
                     check=True,
                 )
 
-                MBtilesCopy: Path = MBtilesDB.with_name(
-                    MBtilesDB.stem + str(FullLoops) + MBtilesDB.suffix
+                mbtiles_copy: Path = mbtiles_database.with_name(
+                    mbtiles_database.stem + str(full_loops) + mbtiles_database.suffix
                 )
 
-                shutil.copy(MBtilesDB, MBtilesCopy)
-
-                Log(
-                    LogfileName,
-                    "Whole area processed completely - copy created and start next mapsource.",
+                shutil.copy(
+                    mbtiles_database,
+                    mbtiles_copy,
                 )
 
-                SourceCounter += 1
-                TotalTileCount = 0
-                MapRun = False
-                PickupDone = True
+                log(
+                    LOGFILE_NAME,
+                    (
+                        "Whole area processed completely - copy created and "
+                        "start next mapsource."
+                    ),
+                )
 
-                if SourceCounter >= len(MapSources):
-                    if ProcessStateFile.exists():
-                        ProcessStateFile.unlink()
+                source_counter += 1
+                total_tile_count = 0
+                map_run = False
+                pickup_done = True
 
-                    Run = False
+                if source_counter >= len(map_sources):
+                    if PROCESS_STATE_FILE.exists():
+                        PROCESS_STATE_FILE.unlink()
 
-    RequestSession.close()
+                    run = False
 
-    Log(
-        LogfileName,
-        "Shutdown received or error occured - graceful exit successfull.",
+    request_session.close()
+
+    log(
+        LOGFILE_NAME,
+        ("Shutdown received or error occured - graceful exit " "successfull."),
     )
 
-    Log(
-        LogfileName,
+    log(
+        LOGFILE_NAME,
         "------ Download ended at "
         + str(datetime.datetime.now())
         + " after getting "
-        + str(SessionTileCount)
+        + str(session_tile_count)
         + " tiles. ------",
     )
 
