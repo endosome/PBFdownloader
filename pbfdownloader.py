@@ -48,7 +48,7 @@ import time
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from types import FrameType
-from typing import Any, NamedTuple, TypeAlias
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import requests
 import typer
@@ -78,12 +78,11 @@ MINIMUM_REQUEST_ATTEMPTS: int = 3
 # Change 4: Limit exponential retry backoff to a reasonable maximum
 MAXIMUM_RETRY_BACKOFF: float = 300
 
-# Files for storing the status
+# File for storing the download state
 PROCESS_STATE_FILE: Path = Path("./DownloadState.txt")
-LOGFILE_NAME: Path = Path("./download.log")
 
 # User Agent for the web requests - some services block non-browser user agents
-HEADERS: dict[str, str] = {
+HEADERS: Dict[str, str] = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) "
         "Gecko/20100101 Firefox/136.0"
@@ -92,10 +91,10 @@ HEADERS: dict[str, str] = {
 
 ######## CONFIG end ######
 
-MapSourceConfig: TypeAlias = dict[str, Any]
-MapConfig: TypeAlias = dict[str, MapSourceConfig]
-TileRecord: TypeAlias = tuple[int, int, int, bytes]
-TileBatch: TypeAlias = tuple[TileRecord, ...]
+MapSourceConfig = Dict[str, Any]
+MapConfig = Dict[str, MapSourceConfig]
+TileRecord = Tuple[int, int, int, bytes]
+TileBatch = Tuple[TileRecord, ...]
 
 
 class Status(NamedTuple):
@@ -123,7 +122,7 @@ def degrees_to_tile_number(
     latitude_degrees: float,
     longitude_degrees: float,
     zoom: int,
-) -> tuple[int, int]:
+) -> Tuple[int, int]:
     latitude_radians: float = math.radians(latitude_degrees)
     tile_count: float = 2.0**zoom
 
@@ -183,16 +182,13 @@ def read_map_status(file: Path) -> int:
     return full_loops
 
 
-def log(logfile_name: Path, message: str) -> None:
+def log(message: str) -> None:
     print(message)
-
-    with logfile_name.open("a") as logfile:
-        logfile.write(message + "\n")
 
 
 def count_database_tiles(database_file: Path) -> int:
     with sqlite3.connect(database_file) as connection:
-        result: tuple[int] | None = connection.execute(
+        result: Optional[Tuple[int]] = connection.execute(
             "SELECT COUNT(*) FROM tiles"
         ).fetchone()
 
@@ -205,11 +201,10 @@ def count_database_tiles(database_file: Path) -> int:
 def write_to_database(
     database_file: Path,
     tile_list: TileBatch,
-    logfile_name: Path,
     total_tile_count: int,
 ) -> int:
     with sqlite3.connect(database_file) as database:
-        before_result: tuple[int] | None = database.execute(
+        before_result: Optional[Tuple[int]] = database.execute(
             "SELECT COUNT(*) FROM tiles"
         ).fetchone()
 
@@ -224,7 +219,7 @@ def write_to_database(
             tile_list,
         )
 
-        after_result: tuple[int] | None = database.execute(
+        after_result: Optional[Tuple[int]] = database.execute(
             "SELECT COUNT(*) FROM tiles"
         ).fetchone()
 
@@ -234,13 +229,12 @@ def write_to_database(
     overwritten: int = len(tile_list) - unique_added
 
     log(
-        logfile_name,
         (
             f"Wrote {len(tile_list)} downloaded tiles. "
             f"New unique tiles: {unique_added}. "
             f"Overwritten tiles: {overwritten}. "
             f"Database total: {after_count}"
-        ),
+        )
     )
 
     return after_count
@@ -267,7 +261,7 @@ def wait_for_request_slot(
 
 
 # Change 3: Support both numeric and HTTP-date Retry-After header values
-def parse_retry_after(retry_after_value: str | None) -> float:
+def parse_retry_after(retry_after_value: Optional[str]) -> float:
     if retry_after_value is None:
         return DEFAULT_RETRY_AFTER
 
@@ -304,7 +298,7 @@ def calculate_retry_backoff(
 
 def handle_stop_signals(
     signum: int,
-    frame: FrameType | None,
+    frame: Optional[FrameType],
 ) -> None:
     global run
     run = False
@@ -332,7 +326,7 @@ def main(
     with config.open("r") as json_data:
         map_list: MapConfig = json.load(json_data)
 
-    map_sources: list[str] = list(map_list.keys())
+    map_sources: List[str] = list(map_list.keys())
 
     server_part_number: int = 0
     session_tile_count: int = 0
@@ -347,10 +341,7 @@ def main(
     request_session: requests.Session = requests.Session()
     request_session.headers.update(HEADERS)
 
-    log(
-        LOGFILE_NAME,
-        "------ Start at " + str(datetime.datetime.now()) + " ------",
-    )
+    log("------ Start at " + str(datetime.datetime.now()) + " ------")
 
     signal.signal(signal.SIGINT, handle_stop_signals)
     signal.signal(signal.SIGTERM, handle_stop_signals)
@@ -359,7 +350,6 @@ def main(
         pickup_status: Status = read_global_status(PROCESS_STATE_FILE)
 
         log(
-            LOGFILE_NAME,
             "Pick up from S,Z,X,Y,T: "
             + str(map_sources[pickup_status.source])
             + " "
@@ -369,7 +359,7 @@ def main(
             + " "
             + str(pickup_status.y)
             + " "
-            + str(pickup_status.total_tile_count),
+            + str(pickup_status.total_tile_count)
         )
 
         min_z: int = pickup_status.z
@@ -384,11 +374,11 @@ def main(
         source_config: MapSourceConfig = map_list[map_sources[source_counter]]
 
         download_url: str = source_config["DownloadURL"]
-        server_parts: list[str] = source_config["ServerParts"]
+        server_parts: List[str] = source_config["ServerParts"]
         mbtiles_database: Path = Path(source_config["MBtilesDB"])
         map_name: str = source_config["Name"]
         max_z: int = source_config["max_z"]
-        bounding_box: list[float] = source_config["BoundingBox"]
+        bounding_box: List[float] = source_config["BoundingBox"]
         min_z_default: int = source_config["min_z"]
 
         # Change 5: Prefer an explicit requests-per-second setting, with
@@ -436,12 +426,11 @@ def main(
         next_request_time: float = time.monotonic()
 
         log(
-            LOGFILE_NAME,
             (
                 f"Request rate: {requests_per_second:.3f} requests/s "
                 f"(base spacing {read_spacing:.3f}s, "
                 f"jitter ±{REQUEST_JITTER_FRACTION * 100:.0f}%)"
-            ),
+            )
         )
 
         ### For Debugging
@@ -507,13 +496,13 @@ def main(
         total_tiles_to_process: int = 0
 
         for progress_z in range(min_z, max_z + 1):
-            progress_lower_left: tuple[int, int] = degrees_to_tile_number(
+            progress_lower_left: Tuple[int, int] = degrees_to_tile_number(
                 bounding_box[1],
                 bounding_box[0],
                 progress_z,
             )
 
-            progress_upper_right: tuple[int, int] = degrees_to_tile_number(
+            progress_upper_right: Tuple[int, int] = degrees_to_tile_number(
                 bounding_box[3],
                 bounding_box[2],
                 progress_z,
@@ -541,30 +530,26 @@ def main(
         progress_start_time: float = time.monotonic()
         last_progress_time: float = progress_start_time
 
-        log(
-            LOGFILE_NAME,
-            "Total tiles scheduled for this run: " + str(total_tiles_to_process),
-        )
+        log("Total tiles scheduled for this run: " + str(total_tiles_to_process))
 
         while map_run and run:
             log(
-                LOGFILE_NAME,
                 "Now processing "
                 + map_sources[source_counter]
                 + " ("
                 + str(mbtiles_database)
-                + ")",
+                + ")"
             )
 
             for z in range(min_z, max_z + 1):
                 # Coordinates for Google-style URLs
-                lower_left: tuple[int, int] = degrees_to_tile_number(
+                lower_left: Tuple[int, int] = degrees_to_tile_number(
                     bounding_box[1],
                     bounding_box[0],
                     z,  # min latitude  # min longitude
                 )
 
-                upper_right: tuple[int, int] = degrees_to_tile_number(
+                upper_right: Tuple[int, int] = degrees_to_tile_number(
                     bounding_box[3],
                     bounding_box[2],
                     z,  # max latitude  # max longitude
@@ -604,7 +589,6 @@ def main(
                 level_tiles_processed: int = 0
 
                 log(
-                    LOGFILE_NAME,
                     "Will download Level "
                     + str(z)
                     + " - number of tiles: "
@@ -613,7 +597,7 @@ def main(
                         " - remaining this run: " + str(level_tiles_to_process)
                         if level_pickup
                         else ""
-                    ),
+                    )
                 )
 
                 for y in range(start_y, max_y + 1):
@@ -665,7 +649,6 @@ def main(
 
                                 if retry_counter == max_retries:
                                     log(
-                                        LOGFILE_NAME,
                                         (
                                             "Error: Failed to download tile "
                                             "Z,X,Y "
@@ -674,18 +657,12 @@ def main(
                                             + str(x)
                                             + " "
                                             + str(y)
-                                        ),
+                                        )
                                     )
 
-                                    log(
-                                        LOGFILE_NAME,
-                                        "Request error: " + str(request_error),
-                                    )
+                                    log("Request error: " + str(request_error))
 
-                                    log(
-                                        LOGFILE_NAME,
-                                        "URL:" + url,
-                                    )
+                                    log("URL:" + url)
 
                                     run = False
                                 else:
@@ -697,7 +674,6 @@ def main(
                                     )
 
                                     log(
-                                        LOGFILE_NAME,
                                         (
                                             "Request error for tile Z,X,Y "
                                             + str(z)
@@ -708,7 +684,7 @@ def main(
                                             + ". Retrying in "
                                             + f"{backoff_seconds:.1f}"
                                             + " seconds."
-                                        ),
+                                        )
                                     )
 
                                     time.sleep(backoff_seconds)
@@ -741,7 +717,6 @@ def main(
                                     total_tile_count = write_to_database(
                                         mbtiles_database,
                                         vector_tiles,
-                                        LOGFILE_NAME,
                                         total_tile_count,
                                     )
 
@@ -767,7 +742,6 @@ def main(
 
                                 if retry_counter == max_retries:
                                     log(
-                                        LOGFILE_NAME,
                                         (
                                             "Error: Rate limit persisted for "
                                             "tile Z,X,Y "
@@ -776,29 +750,20 @@ def main(
                                             + str(x)
                                             + " "
                                             + str(y)
-                                        ),
+                                        )
                                     )
 
-                                    log(
-                                        LOGFILE_NAME,
-                                        "Status:" + str(tile_download.status_code),
-                                    )
+                                    log("Status:" + str(tile_download.status_code))
+
+                                    log("URL:" + tile_download.url)
 
                                     log(
-                                        LOGFILE_NAME,
-                                        "URL:" + tile_download.url,
-                                    )
-
-                                    log(
-                                        LOGFILE_NAME,
-                                        "Response headers:"
-                                        + str(tile_download.headers),
+                                        "Response headers:" + str(tile_download.headers)
                                     )
 
                                     run = False
                                 else:
                                     log(
-                                        LOGFILE_NAME,
                                         (
                                             "Rate limited for tile Z,X,Y "
                                             + str(z)
@@ -809,7 +774,7 @@ def main(
                                             + ". Retrying in "
                                             + (f"{retry_after_seconds:.1f}")
                                             + " seconds."
-                                        ),
+                                        )
                                     )
 
                                     time.sleep(retry_after_seconds)
@@ -822,7 +787,6 @@ def main(
                                     missing_tiles_this_map += 1
 
                                     log(
-                                        LOGFILE_NAME,
                                         (
                                             "Warning: Tile Z,X,Y "
                                             + str(z)
@@ -831,7 +795,7 @@ def main(
                                             + " "
                                             + str(y)
                                             + (" seems out of bounds " "(404)")
-                                        ),
+                                        )
                                     )
 
                             else:
@@ -839,7 +803,6 @@ def main(
 
                                 if retry_counter == max_retries:
                                     log(
-                                        LOGFILE_NAME,
                                         (
                                             "Error: Failed to download tile "
                                             "Z,X,Y "
@@ -848,29 +811,20 @@ def main(
                                             + str(x)
                                             + " "
                                             + str(y)
-                                        ),
+                                        )
                                     )
 
-                                    log(
-                                        LOGFILE_NAME,
-                                        "Status:" + str(tile_download.status_code),
-                                    )
+                                    log("Status:" + str(tile_download.status_code))
+
+                                    log("URL:" + tile_download.url)
 
                                     log(
-                                        LOGFILE_NAME,
-                                        "URL:" + tile_download.url,
-                                    )
-
-                                    log(
-                                        LOGFILE_NAME,
                                         "Request headers:"
-                                        + str(tile_download.request.headers),
+                                        + str(tile_download.request.headers)
                                     )
 
                                     log(
-                                        LOGFILE_NAME,
-                                        "Response headers:"
-                                        + str(tile_download.headers),
+                                        "Response headers:" + str(tile_download.headers)
                                     )
 
                                     # Currently no way to handle errors more
@@ -886,7 +840,6 @@ def main(
                                     )
 
                                     log(
-                                        LOGFILE_NAME,
                                         (
                                             "HTTP "
                                             + str(tile_download.status_code)
@@ -899,7 +852,7 @@ def main(
                                             + ". Retrying in "
                                             + f"{backoff_seconds:.1f}"
                                             + " seconds."
-                                        ),
+                                        )
                                     )
 
                                     time.sleep(backoff_seconds)
@@ -957,7 +910,6 @@ def main(
                                 overall_percent = 100
 
                             log(
-                                LOGFILE_NAME,
                                 (
                                     f"{datetime.datetime.now():%H:%M:%S} | "
                                     f"z{z} "
@@ -974,7 +926,7 @@ def main(
                                     f"{missing_tiles_this_map} | "
                                     f"{processing_speed:.2f} tiles/s | "
                                     f"ETA {eta_string}"
-                                ),
+                                )
                             )
 
                             last_progress_time = current_time
@@ -993,7 +945,6 @@ def main(
                 total_tile_count = write_to_database(
                     mbtiles_database,
                     vector_tiles,
-                    LOGFILE_NAME,
                     total_tile_count,
                 )
 
@@ -1037,11 +988,10 @@ def main(
                 )
 
                 log(
-                    LOGFILE_NAME,
                     (
                         "Whole area processed completely - copy created and "
                         "start next mapsource."
-                    ),
+                    )
                 )
 
                 source_counter += 1
@@ -1057,18 +1007,14 @@ def main(
 
     request_session.close()
 
-    log(
-        LOGFILE_NAME,
-        ("Shutdown received or error occured - graceful exit " "successfull."),
-    )
+    log(("Shutdown received or error occured - graceful exit " "successfull."))
 
     log(
-        LOGFILE_NAME,
         "------ Download ended at "
         + str(datetime.datetime.now())
         + " after getting "
         + str(session_tile_count)
-        + " tiles. ------",
+        + " tiles. ------"
     )
 
 
