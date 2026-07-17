@@ -44,7 +44,6 @@ from pathlib import Path
 import shutil
 import datetime
 import gzip
-import os
 import json
 import sqlite3
 import time
@@ -75,8 +74,8 @@ MinimumRequestAttempts = 3
 MaximumRetryBackoff = 300
 
 # Files for storing the status
-ProcessStateFile = "./DownloadState.txt"
-LogfileName = "./download.log"
+ProcessStateFile = Path("./DownloadState.txt")
+LogfileName = Path("./download.log")
 
 # User Agent for the web requests - some services block non-browser user agents
 headers = {
@@ -104,45 +103,43 @@ def deg2num(lat_deg, lon_deg, zoom):
 
 
 def WriteGlobalStatus(File, Source, X, Y, Z, TotalTileCount):
-    with open(File, "w") as StatusFile:
+    with File.open("w") as StatusFile:
         StatusFile.write(str(Source) + "\n")
         StatusFile.write(str(Z) + "\n")
         StatusFile.write(str(X) + "\n")
         StatusFile.write(str(Y) + "\n")
         StatusFile.write(str(TotalTileCount) + "\n")
-        StatusFile.close()
     print("Updated Download State")
 
 
 def ReadGlobalStatus(File):
-    with open(File, "r") as StatusFile:
+    with File.open("r") as StatusFile:
         Source = int(StatusFile.readline())
         Z = int(StatusFile.readline())
         X = int(StatusFile.readline())
         Y = int(StatusFile.readline())
         TotalTileCount = int(StatusFile.readline())
-        StatusFile.close()
+
     return Status(Source=Source, X=X, Y=Y, Z=Z, TotalTileCount=TotalTileCount)
 
 
 def WriteMapStatus(File, FullLoops):
-    with open(File, "w") as StatusFile:
+    with File.open("w") as StatusFile:
         StatusFile.write(str(FullLoops) + "\n")
-        StatusFile.close()
 
 
 def ReadMapStatus(File):
-    with open(File, "r") as StatusFile:
+    with File.open("r") as StatusFile:
         FullLoops = int(StatusFile.readline())
-        StatusFile.close()
+
     return FullLoops
 
 
 def Log(LogfileName, Message):
     print(Message)
-    with open(LogfileName, "a") as Logfile:
+
+    with LogfileName.open("a") as Logfile:
         Logfile.write(Message + "\n")
-        Logfile.close()
 
 
 def CountDatabaseTiles(database_file):
@@ -256,7 +253,6 @@ def main(
     # CLI: Load the selected configuration file, defaulting to mapconfig.json
     with config.open("r") as json_data:
         Maplist = json.load(json_data)
-        json_data.close()
 
     MapSources = list(Maplist.keys())
 
@@ -277,8 +273,9 @@ def main(
     signal.signal(signal.SIGINT, handler_stop_signals)
     signal.signal(signal.SIGTERM, handler_stop_signals)
 
-    if os.path.exists(ProcessStateFile):
+    if ProcessStateFile.exists():
         PickupStatus = ReadGlobalStatus(ProcessStateFile)
+
         Log(
             LogfileName,
             "Pick up from S,Z,X,Y,T: "
@@ -292,6 +289,7 @@ def main(
             + " "
             + str(PickupStatus.TotalTileCount),
         )
+
         min_z = PickupStatus.Z
         TotalTileCount = PickupStatus.TotalTileCount
         SourceCounter = PickupStatus.Source
@@ -304,7 +302,7 @@ def main(
 
         DownloadURL = Maplist[MapSources[SourceCounter]]["DownloadURL"]
         ServerParts = Maplist[MapSources[SourceCounter]]["ServerParts"]
-        MBtilesDB = Maplist[MapSources[SourceCounter]]["MBtilesDB"]
+        MBtilesDB = Path(Maplist[MapSources[SourceCounter]]["MBtilesDB"])
         MapName = Maplist[MapSources[SourceCounter]]["Name"]
         max_z = Maplist[MapSources[SourceCounter]]["max_z"]
         BoundingBox = Maplist[MapSources[SourceCounter]]["BoundingBox"]
@@ -328,9 +326,9 @@ def main(
 
             RequestsPerSecond = 1.0 / ReadSpacing
 
-        MapStatusFile = "./" + MapSources[SourceCounter] + "_status.txt"
+        MapStatusFile = Path(".") / (MapSources[SourceCounter] + "_status.txt")
 
-        if os.path.exists(MapStatusFile):
+        if MapStatusFile.exists():
             FullLoops = ReadMapStatus(MapStatusFile)
         else:
             FullLoops = 0
@@ -379,6 +377,7 @@ def main(
                     value TEXT
                 )
                 """)
+
             out.execute("""
                 CREATE TABLE IF NOT EXISTS tiles (
                     zoom_level INTEGER NOT NULL,
@@ -388,6 +387,7 @@ def main(
                     PRIMARY KEY (zoom_level, tile_column, tile_row)
                 )
                 """)
+
             out.executemany(
                 """
                 INSERT OR REPLACE INTO metadata (name, value)
@@ -451,7 +451,11 @@ def main(
 
             Log(
                 LogfileName,
-                "Now processing " + MapSources[SourceCounter] + " (" + MBtilesDB + ")",
+                "Now processing "
+                + MapSources[SourceCounter]
+                + " ("
+                + str(MBtilesDB)
+                + ")",
             )
 
             for Z in range(min_z, max_z + 1):
@@ -536,7 +540,10 @@ def main(
                                 ServerPartNumber = 0
 
                             URL = (
-                                DownloadURL.replace("{server}", ServerPart)
+                                DownloadURL.replace(
+                                    "{server}",
+                                    ServerPart,
+                                )
                                 .replace("{x}", str(X))
                                 .replace("{y}", str(Y))
                                 .replace("{z}", str(Z))
@@ -567,10 +574,12 @@ def main(
                                         + " "
                                         + str(Y),
                                     )
+
                                     Log(
                                         LogfileName,
                                         "Request error: " + str(RequestError),
                                     )
+
                                     Log(LogfileName, "URL:" + URL)
                                     Run = False
                                 else:
@@ -604,7 +613,16 @@ def main(
 
                             if TileDownload.status_code == 200:
                                 TileData = gzip.compress(TileDownload.content)
-                                VectorTiles += ((Z, X, Yconversion - Y, TileData),)
+
+                                VectorTiles += (
+                                    (
+                                        Z,
+                                        X,
+                                        Yconversion - Y,
+                                        TileData,
+                                    ),
+                                )
+
                                 SessionTileCount += 1
                                 SuccessfulTilesThisMap += 1
                                 TileDownloadedSuccessfully = True
@@ -618,7 +636,9 @@ def main(
                                         LogfileName,
                                         TotalTileCount,
                                     )
+
                                     VectorTiles = ()
+
                                     WriteGlobalStatus(
                                         ProcessStateFile,
                                         SourceCounter,
@@ -631,6 +651,7 @@ def main(
                             # Change 3: Respect server-provided Retry-After delays when rate limited
                             elif TileDownload.status_code == 429:
                                 RetryCounter += 1
+
                                 RetryAfterSeconds = ParseRetryAfter(
                                     TileDownload.headers.get("Retry-After")
                                 )
@@ -645,18 +666,22 @@ def main(
                                         + " "
                                         + str(Y),
                                     )
+
                                     Log(
                                         LogfileName,
                                         "Status:" + str(TileDownload.status_code),
                                     )
+
                                     Log(
                                         LogfileName,
                                         "URL:" + TileDownload.url,
                                     )
+
                                     Log(
                                         LogfileName,
                                         "Response headers:" + str(TileDownload.headers),
                                     )
+
                                     Run = False
                                 else:
                                     Log(
@@ -682,6 +707,7 @@ def main(
                                 if RetryCounter == MaxRetries:
                                     TileMissing = True
                                     MissingTilesThisMap += 1
+
                                     Log(
                                         LogfileName,
                                         "Warning: Tile Z,X,Y "
@@ -706,23 +732,28 @@ def main(
                                         + " "
                                         + str(Y),
                                     )
+
                                     Log(
                                         LogfileName,
                                         "Status:" + str(TileDownload.status_code),
                                     )
+
                                     Log(
                                         LogfileName,
                                         "URL:" + TileDownload.url,
                                     )
+
                                     Log(
                                         LogfileName,
                                         "Request headers:"
                                         + str(TileDownload.request.headers),
                                     )
+
                                     Log(
                                         LogfileName,
                                         "Response headers:" + str(TileDownload.headers),
                                     )
+
                                     Run = False  # Currently no way to handle errors more gracefully - just stop the program and retry with next run.
                                 else:
                                     # Change 4: Back off exponentially before retrying other HTTP errors
@@ -777,6 +808,7 @@ def main(
 
                             if ProcessingSpeed > 0:
                                 ETASeconds = RemainingTiles / ProcessingSpeed
+
                                 ETAString = str(
                                     datetime.timedelta(seconds=int(ETASeconds))
                                 )
@@ -802,13 +834,17 @@ def main(
                                 (
                                     f"{datetime.datetime.now():%H:%M:%S} | "
                                     f"z{Z} "
-                                    f"{LevelTilesProcessed}/{LevelTilesToProcess} "
+                                    f"{LevelTilesProcessed}/"
+                                    f"{LevelTilesToProcess} "
                                     f"({LevelPercent:.1f}%) | "
                                     f"overall "
-                                    f"{OverallTilesProcessed}/{TotalTilesToProcess} "
+                                    f"{OverallTilesProcessed}/"
+                                    f"{TotalTilesToProcess} "
                                     f"({OverallPercent:.1f}%) | "
-                                    f"downloaded {SuccessfulTilesThisMap} | "
-                                    f"missing {MissingTilesThisMap} | "
+                                    f"downloaded "
+                                    f"{SuccessfulTilesThisMap} | "
+                                    f"missing "
+                                    f"{MissingTilesThisMap} | "
                                     f"{ProcessingSpeed:.2f} tiles/s | "
                                     f"ETA {ETAString}"
                                 ),
@@ -856,18 +892,16 @@ def main(
                         "validate",
                         "--agg-hash",
                         "update",
-                        MBtilesDB,
+                        str(MBtilesDB),
                     ],
                     check=True,
                 )
 
-                shutil.copy(
-                    MBtilesDB,
-                    MBtilesDB.replace(
-                        ".mbtiles",
-                        str(FullLoops) + ".mbtiles",
-                    ),
+                MBtilesCopy = MBtilesDB.with_name(
+                    MBtilesDB.stem + str(FullLoops) + MBtilesDB.suffix
                 )
+
+                shutil.copy(MBtilesDB, MBtilesCopy)
 
                 Log(
                     LogfileName,
@@ -880,8 +914,8 @@ def main(
                 PickupDone = True
 
                 if SourceCounter >= len(MapSources):
-                    if os.path.exists(ProcessStateFile):
-                        os.remove(ProcessStateFile)
+                    if ProcessStateFile.exists():
+                        ProcessStateFile.unlink()
 
                     Run = False
 
