@@ -40,6 +40,7 @@ import signal
 from time import sleep
 from collections import namedtuple
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 import shutil
 import datetime
 import gzip
@@ -48,6 +49,7 @@ import json
 import sqlite3
 import time
 import random
+import typer
 
 ######## CONFIG start ######
 
@@ -83,25 +85,9 @@ headers = {
 
 ######## CONFIG end ######
 
-with open("./mapconfig.json") as json_data:
-    Maplist = json.load(json_data)
-    json_data.close()
-
-MapSources = list(Maplist.keys())
-
-ServerPartNumber = 0
-SessionTileCount = 0
-TotalTileCount = 0
-SourceCounter = 0
-VectorTiles = ()
-
 Status = namedtuple("Status", ["Source", "X", "Y", "Z", "TotalTileCount"])
 
 Run = True
-
-# Change 1: Reuse TCP/TLS connections instead of opening a new connection for every tile
-RequestSession = requests.Session()
-RequestSession.headers.update(headers)
 
 ######## INIT end #######
 
@@ -251,529 +237,587 @@ def handler_stop_signals(signum, frame):
 
 ######## Procedures end #########
 
-Log(LogfileName, "------ Start at " + str(datetime.datetime.now()) + " ------")
 
-signal.signal(signal.SIGINT, handler_stop_signals)
-signal.signal(signal.SIGTERM, handler_stop_signals)
+def main(
+    config: Path = typer.Option(
+        Path("mapconfig.json"),
+        "--config",
+        "-c",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Path to the map configuration JSON file.",
+    ),
+):
+    global Run
 
-if os.path.exists(ProcessStateFile):
-    PickupStatus = ReadGlobalStatus(ProcessStateFile)
-    Log(
-        LogfileName,
-        "Pick up from S,Z,X,Y,T: "
-        + str(MapSources[PickupStatus.Source])
-        + " "
-        + str(PickupStatus.Z)
-        + " "
-        + str(PickupStatus.X)
-        + " "
-        + str(PickupStatus.Y)
-        + " "
-        + str(PickupStatus.TotalTileCount),
-    )
-    min_z = PickupStatus.Z
-    TotalTileCount = PickupStatus.TotalTileCount
-    SourceCounter = PickupStatus.Source
-    PickupDone = PickupStatus.X == 0
-    MapRun = True
-else:
-    PickupDone = True
+    # CLI: Load the selected configuration file, defaulting to mapconfig.json
+    with config.open("r") as json_data:
+        Maplist = json.load(json_data)
+        json_data.close()
 
-while Run:
+    MapSources = list(Maplist.keys())
 
-    DownloadURL = Maplist[MapSources[SourceCounter]]["DownloadURL"]
-    ServerParts = Maplist[MapSources[SourceCounter]]["ServerParts"]
-    MBtilesDB = Maplist[MapSources[SourceCounter]]["MBtilesDB"]
-    MapName = Maplist[MapSources[SourceCounter]]["Name"]
-    max_z = Maplist[MapSources[SourceCounter]]["max_z"]
-    BoundingBox = Maplist[MapSources[SourceCounter]]["BoundingBox"]
-    min_z0 = Maplist[MapSources[SourceCounter]]["min_z"]
+    ServerPartNumber = 0
+    SessionTileCount = 0
+    TotalTileCount = 0
+    SourceCounter = 0
+    VectorTiles = ()
 
-    # Change 5: Prefer an explicit requests-per-second setting, with ReadSpacing as a legacy fallback
-    if "RequestsPerSecond" in Maplist[MapSources[SourceCounter]]:
-        RequestsPerSecond = float(
-            Maplist[MapSources[SourceCounter]]["RequestsPerSecond"]
+    Run = True
+
+    # Change 1: Reuse TCP/TLS connections instead of opening a new connection for every tile
+    RequestSession = requests.Session()
+    RequestSession.headers.update(headers)
+
+    Log(LogfileName, "------ Start at " + str(datetime.datetime.now()) + " ------")
+
+    signal.signal(signal.SIGINT, handler_stop_signals)
+    signal.signal(signal.SIGTERM, handler_stop_signals)
+
+    if os.path.exists(ProcessStateFile):
+        PickupStatus = ReadGlobalStatus(ProcessStateFile)
+        Log(
+            LogfileName,
+            "Pick up from S,Z,X,Y,T: "
+            + str(MapSources[PickupStatus.Source])
+            + " "
+            + str(PickupStatus.Z)
+            + " "
+            + str(PickupStatus.X)
+            + " "
+            + str(PickupStatus.Y)
+            + " "
+            + str(PickupStatus.TotalTileCount),
         )
-
-        if RequestsPerSecond <= 0:
-            raise ValueError("RequestsPerSecond must be greater than zero")
-
-        ReadSpacing = 1.0 / RequestsPerSecond
+        min_z = PickupStatus.Z
+        TotalTileCount = PickupStatus.TotalTileCount
+        SourceCounter = PickupStatus.Source
+        PickupDone = PickupStatus.X == 0
+        MapRun = True
     else:
-        ReadSpacing = float(Maplist[MapSources[SourceCounter]]["ReadSpacing"])
+        PickupDone = True
 
-        if ReadSpacing <= 0:
-            raise ValueError("ReadSpacing must be greater than zero")
+    while Run:
 
-        RequestsPerSecond = 1.0 / ReadSpacing
+        DownloadURL = Maplist[MapSources[SourceCounter]]["DownloadURL"]
+        ServerParts = Maplist[MapSources[SourceCounter]]["ServerParts"]
+        MBtilesDB = Maplist[MapSources[SourceCounter]]["MBtilesDB"]
+        MapName = Maplist[MapSources[SourceCounter]]["Name"]
+        max_z = Maplist[MapSources[SourceCounter]]["max_z"]
+        BoundingBox = Maplist[MapSources[SourceCounter]]["BoundingBox"]
+        min_z0 = Maplist[MapSources[SourceCounter]]["min_z"]
 
-    MapStatusFile = "./" + MapSources[SourceCounter] + "_status.txt"
-
-    if os.path.exists(MapStatusFile):
-        FullLoops = ReadMapStatus(MapStatusFile)
-    else:
-        FullLoops = 0
-
-    if PickupDone:
-        min_z = min_z0
-
-    MapRun = True
-
-    NumberOfServerParts = len(ServerParts)
-
-    # Change 4: Use at least three attempts so backoff also works with a single server
-    MaxRetries = max(NumberOfServerParts, MinimumRequestAttempts)
-
-    # Change 5: Track the next permitted request start time for this map source
-    NextRequestTime = time.monotonic()
-
-    Log(
-        LogfileName,
-        (
-            f"Request rate: {RequestsPerSecond:.3f} requests/s "
-            f"(base spacing {ReadSpacing:.3f}s, "
-            f"jitter ±{RequestJitterFraction * 100:.0f}%)"
-        ),
-    )
-
-    ### For Debugging
-    # 	print(DownloadURL)
-    # 	print(ServerParts)
-    # 	print(MBtilesDB)
-    # 	print(MapName)
-    # 	print(max_z)
-    # 	print(min_z0)
-    # 	print(min_z)
-    # 	print(BoundingBox)
-    # 	print(ReadSpacing)
-    # 	print(MapStatusFile)
-    # 	print(NumberOfServerParts)
-    # 	print(MaxRetries)
-    # 	print(FullLoops)
-
-    with sqlite3.connect(MBtilesDB) as out:
-        out.execute("""
-            CREATE TABLE IF NOT EXISTS metadata (
-                name TEXT NOT NULL PRIMARY KEY,
-                value TEXT
+        # Change 5: Prefer an explicit requests-per-second setting, with ReadSpacing as a legacy fallback
+        if "RequestsPerSecond" in Maplist[MapSources[SourceCounter]]:
+            RequestsPerSecond = float(
+                Maplist[MapSources[SourceCounter]]["RequestsPerSecond"]
             )
-            """)
-        out.execute("""
-            CREATE TABLE IF NOT EXISTS tiles (
-                zoom_level INTEGER NOT NULL,
-                tile_column INTEGER NOT NULL,
-                tile_row INTEGER NOT NULL,
-                tile_data BLOB NOT NULL,
-                PRIMARY KEY (zoom_level, tile_column, tile_row)
-            )
-            """)
-        out.executemany(
-            """
-            INSERT OR REPLACE INTO metadata (name, value)
-            VALUES (?, ?)
-            """,
-            (
-                ("name", MapName),
-                ("format", "pbf"),
-                ("crs", "EPSG:3857"),
-                ("minzoom", str(min_z0)),
-                ("maxzoom", str(max_z)),
-                # MBTiles 1.3 specification requires bounds in this order:
-                # left, bottom, right, top
-                # which corresponds to:
-                # west longitude, south latitude, east longitude, north latitude
-                ("bounds", ",".join(str(value) for value in BoundingBox)),
-            ),
-        )
 
-    TotalTilesToProcess = 0
+            if RequestsPerSecond <= 0:
+                raise ValueError("RequestsPerSecond must be greater than zero")
 
-    for ProgressZ in range(min_z, max_z + 1):
-        ProgressLowerLeft = deg2num(
-            BoundingBox[1],
-            BoundingBox[0],
-            ProgressZ,
-        )
-
-        ProgressUpperRight = deg2num(
-            BoundingBox[3],
-            BoundingBox[2],
-            ProgressZ,
-        )
-
-        ProgressMinX = ProgressLowerLeft[0]
-        ProgressMaxX = ProgressUpperRight[0]
-        ProgressMinY = ProgressUpperRight[1]
-        ProgressMaxY = ProgressLowerLeft[1]
-
-        ProgressWidth = ProgressMaxX - ProgressMinX + 1
-
-        if not PickupDone and ProgressZ == PickupStatus.Z:
-            TotalTilesToProcess += (ProgressMaxY - PickupStatus.Y) * ProgressWidth + (
-                ProgressMaxX - PickupStatus.X + 1
-            )
+            ReadSpacing = 1.0 / RequestsPerSecond
         else:
-            TotalTilesToProcess += ProgressWidth * (ProgressMaxY - ProgressMinY + 1)
+            ReadSpacing = float(Maplist[MapSources[SourceCounter]]["ReadSpacing"])
 
-    OverallTilesProcessed = 0
-    SuccessfulTilesThisMap = 0
-    MissingTilesThisMap = 0
-    ProgressStartTime = time.monotonic()
-    LastProgressTime = ProgressStartTime
+            if ReadSpacing <= 0:
+                raise ValueError("ReadSpacing must be greater than zero")
 
-    Log(
-        LogfileName,
-        "Total tiles scheduled for this run: " + str(TotalTilesToProcess),
-    )
+            RequestsPerSecond = 1.0 / ReadSpacing
 
-    while MapRun and Run:
+        MapStatusFile = "./" + MapSources[SourceCounter] + "_status.txt"
+
+        if os.path.exists(MapStatusFile):
+            FullLoops = ReadMapStatus(MapStatusFile)
+        else:
+            FullLoops = 0
+
+        if PickupDone:
+            min_z = min_z0
+
+        MapRun = True
+
+        NumberOfServerParts = len(ServerParts)
+
+        # Change 4: Use at least three attempts so backoff also works with a single server
+        MaxRetries = max(NumberOfServerParts, MinimumRequestAttempts)
+
+        # Change 5: Track the next permitted request start time for this map source
+        NextRequestTime = time.monotonic()
 
         Log(
             LogfileName,
-            "Now processing " + MapSources[SourceCounter] + " (" + MBtilesDB + ")",
+            (
+                f"Request rate: {RequestsPerSecond:.3f} requests/s "
+                f"(base spacing {ReadSpacing:.3f}s, "
+                f"jitter ±{RequestJitterFraction * 100:.0f}%)"
+            ),
         )
 
-        for Z in range(min_z, max_z + 1):
+        ### For Debugging
+        # 	print(DownloadURL)
+        # 	print(ServerParts)
+        # 	print(MBtilesDB)
+        # 	print(MapName)
+        # 	print(max_z)
+        # 	print(min_z0)
+        # 	print(min_z)
+        # 	print(BoundingBox)
+        # 	print(ReadSpacing)
+        # 	print(MapStatusFile)
+        # 	print(NumberOfServerParts)
+        # 	print(MaxRetries)
+        # 	print(FullLoops)
 
-            # Coordinates for Google-style URLs
-            LowerLeft = deg2num(
-                BoundingBox[1], BoundingBox[0], Z  # min latitude  # min longitude
-            )
-
-            UpperRight = deg2num(
-                BoundingBox[3], BoundingBox[2], Z  # max latitude  # max longitude
-            )
-
-            min_x = LowerLeft[0]
-            max_x = UpperRight[0]
-            min_y = UpperRight[1]
-            max_y = LowerLeft[1]
-
-            # Google-Scheme to Mapbox/TMS Y is: Y_mapbox = 2^Z - 1 - Y_tms
-            Yconversion = 2**Z - 1
-
-            NumberOfTiles = (max_x - min_x + 1) * (max_y - min_y + 1)
-
-            WriteGlobalStatus(
-                ProcessStateFile, SourceCounter, min_x, min_y, Z, TotalTileCount
-            )
-
-            LevelPickup = not PickupDone
-
-            if PickupDone:
-                StartY = min_y
-                LevelTilesToProcess = NumberOfTiles
-            else:
-                StartY = PickupStatus.Y
-                LevelTilesToProcess = (max_y - PickupStatus.Y) * (max_x - min_x + 1) + (
-                    max_x - PickupStatus.X + 1
+        with sqlite3.connect(MBtilesDB) as out:
+            out.execute("""
+                CREATE TABLE IF NOT EXISTS metadata (
+                    name TEXT NOT NULL PRIMARY KEY,
+                    value TEXT
                 )
-
-            LevelTilesProcessed = 0
-
-            Log(
-                LogfileName,
-                "Will download Level "
-                + str(Z)
-                + " - number of tiles: "
-                + str(NumberOfTiles)
-                + (
-                    " - remaining this run: " + str(LevelTilesToProcess)
-                    if LevelPickup
-                    else ""
+                """)
+            out.execute("""
+                CREATE TABLE IF NOT EXISTS tiles (
+                    zoom_level INTEGER NOT NULL,
+                    tile_column INTEGER NOT NULL,
+                    tile_row INTEGER NOT NULL,
+                    tile_data BLOB NOT NULL,
+                    PRIMARY KEY (zoom_level, tile_column, tile_row)
+                )
+                """)
+            out.executemany(
+                """
+                INSERT OR REPLACE INTO metadata (name, value)
+                VALUES (?, ?)
+                """,
+                (
+                    ("name", MapName),
+                    ("format", "pbf"),
+                    ("crs", "EPSG:3857"),
+                    ("minzoom", str(min_z0)),
+                    ("maxzoom", str(max_z)),
+                    # MBTiles 1.3 specification requires bounds in this order:
+                    # left, bottom, right, top
+                    # which corresponds to:
+                    # west longitude, south latitude, east longitude, north latitude
+                    ("bounds", ",".join(str(value) for value in BoundingBox)),
                 ),
             )
 
-            for Y in range(StartY, max_y + 1):
+        TotalTilesToProcess = 0
+
+        for ProgressZ in range(min_z, max_z + 1):
+            ProgressLowerLeft = deg2num(
+                BoundingBox[1],
+                BoundingBox[0],
+                ProgressZ,
+            )
+
+            ProgressUpperRight = deg2num(
+                BoundingBox[3],
+                BoundingBox[2],
+                ProgressZ,
+            )
+
+            ProgressMinX = ProgressLowerLeft[0]
+            ProgressMaxX = ProgressUpperRight[0]
+            ProgressMinY = ProgressUpperRight[1]
+            ProgressMaxY = ProgressLowerLeft[1]
+
+            ProgressWidth = ProgressMaxX - ProgressMinX + 1
+
+            if not PickupDone and ProgressZ == PickupStatus.Z:
+                TotalTilesToProcess += (
+                    ProgressMaxY - PickupStatus.Y
+                ) * ProgressWidth + (ProgressMaxX - PickupStatus.X + 1)
+            else:
+                TotalTilesToProcess += ProgressWidth * (ProgressMaxY - ProgressMinY + 1)
+
+        OverallTilesProcessed = 0
+        SuccessfulTilesThisMap = 0
+        MissingTilesThisMap = 0
+        ProgressStartTime = time.monotonic()
+        LastProgressTime = ProgressStartTime
+
+        Log(
+            LogfileName,
+            "Total tiles scheduled for this run: " + str(TotalTilesToProcess),
+        )
+
+        while MapRun and Run:
+
+            Log(
+                LogfileName,
+                "Now processing " + MapSources[SourceCounter] + " (" + MBtilesDB + ")",
+            )
+
+            for Z in range(min_z, max_z + 1):
+
+                # Coordinates for Google-style URLs
+                LowerLeft = deg2num(
+                    BoundingBox[1],
+                    BoundingBox[0],
+                    Z,  # min latitude  # min longitude
+                )
+
+                UpperRight = deg2num(
+                    BoundingBox[3],
+                    BoundingBox[2],
+                    Z,  # max latitude  # max longitude
+                )
+
+                min_x = LowerLeft[0]
+                max_x = UpperRight[0]
+                min_y = UpperRight[1]
+                max_y = LowerLeft[1]
+
+                # Google-Scheme to Mapbox/TMS Y is: Y_mapbox = 2^Z - 1 - Y_tms
+                Yconversion = 2**Z - 1
+
+                NumberOfTiles = (max_x - min_x + 1) * (max_y - min_y + 1)
+
+                WriteGlobalStatus(
+                    ProcessStateFile,
+                    SourceCounter,
+                    min_x,
+                    min_y,
+                    Z,
+                    TotalTileCount,
+                )
+
+                LevelPickup = not PickupDone
 
                 if PickupDone:
-                    StartX = min_x
+                    StartY = min_y
+                    LevelTilesToProcess = NumberOfTiles
                 else:
-                    StartX = PickupStatus.X
-                    PickupDone = True
+                    StartY = PickupStatus.Y
+                    LevelTilesToProcess = (max_y - PickupStatus.Y) * (
+                        max_x - min_x + 1
+                    ) + (max_x - PickupStatus.X + 1)
 
-                for X in range(StartX, max_x + 1):
+                LevelTilesProcessed = 0
 
-                    RetryCounter = 0
-                    TileDownloadedSuccessfully = False
-                    TileMissing = False
+                Log(
+                    LogfileName,
+                    "Will download Level "
+                    + str(Z)
+                    + " - number of tiles: "
+                    + str(NumberOfTiles)
+                    + (
+                        " - remaining this run: " + str(LevelTilesToProcess)
+                        if LevelPickup
+                        else ""
+                    ),
+                )
 
-                    while RetryCounter < MaxRetries:
-                        ServerPart = ServerParts[ServerPartNumber]
-                        ServerPartNumber += 1
+                for Y in range(StartY, max_y + 1):
 
-                        if ServerPartNumber == NumberOfServerParts:
-                            ServerPartNumber = 0
+                    if PickupDone:
+                        StartX = min_x
+                    else:
+                        StartX = PickupStatus.X
+                        PickupDone = True
 
-                        URL = (
-                            DownloadURL.replace("{server}", ServerPart)
-                            .replace("{x}", str(X))
-                            .replace("{y}", str(Y))
-                            .replace("{z}", str(Z))
-                        )
+                    for X in range(StartX, max_x + 1):
 
-                        # Change 2: Apply rate limiting and jitter before every attempt, including retries
-                        NextRequestTime = WaitForRequestSlot(
-                            NextRequestTime,
-                            ReadSpacing,
-                        )
+                        RetryCounter = 0
+                        TileDownloadedSuccessfully = False
+                        TileMissing = False
 
-                        try:
-                            # Change 1: Use the shared session and a finite request timeout
-                            TileDownload = RequestSession.get(
-                                URL,
-                                timeout=RequestTimeout,
+                        while RetryCounter < MaxRetries:
+                            ServerPart = ServerParts[ServerPartNumber]
+                            ServerPartNumber += 1
+
+                            if ServerPartNumber == NumberOfServerParts:
+                                ServerPartNumber = 0
+
+                            URL = (
+                                DownloadURL.replace("{server}", ServerPart)
+                                .replace("{x}", str(X))
+                                .replace("{y}", str(Y))
+                                .replace("{z}", str(Z))
                             )
-                        except requests.RequestException as RequestError:
-                            RetryCounter += 1
 
-                            if RetryCounter == MaxRetries:
-                                Log(
-                                    LogfileName,
-                                    "Error: Failed to download tile Z,X,Y "
-                                    + str(Z)
-                                    + " "
-                                    + str(X)
-                                    + " "
-                                    + str(Y),
+                            # Change 2: Apply rate limiting and jitter before every attempt, including retries
+                            NextRequestTime = WaitForRequestSlot(
+                                NextRequestTime,
+                                ReadSpacing,
+                            )
+
+                            try:
+                                # Change 1: Use the shared session and a finite request timeout
+                                TileDownload = RequestSession.get(
+                                    URL,
+                                    timeout=RequestTimeout,
                                 )
-                                Log(
-                                    LogfileName,
-                                    "Request error: " + str(RequestError),
-                                )
-                                Log(LogfileName, "URL:" + URL)
-                                Run = False
-                            else:
-                                # Change 4: Back off exponentially after transient request failures
-                                BackoffSeconds = CalculateRetryBackoff(
-                                    ReadSpacing,
-                                    RetryCounter,
+                            except requests.RequestException as RequestError:
+                                RetryCounter += 1
+
+                                if RetryCounter == MaxRetries:
+                                    Log(
+                                        LogfileName,
+                                        "Error: Failed to download tile Z,X,Y "
+                                        + str(Z)
+                                        + " "
+                                        + str(X)
+                                        + " "
+                                        + str(Y),
+                                    )
+                                    Log(
+                                        LogfileName,
+                                        "Request error: " + str(RequestError),
+                                    )
+                                    Log(LogfileName, "URL:" + URL)
+                                    Run = False
+                                else:
+                                    # Change 4: Back off exponentially after transient request failures
+                                    BackoffSeconds = CalculateRetryBackoff(
+                                        ReadSpacing,
+                                        RetryCounter,
+                                    )
+
+                                    Log(
+                                        LogfileName,
+                                        (
+                                            "Request error for tile Z,X,Y "
+                                            + str(Z)
+                                            + " "
+                                            + str(X)
+                                            + " "
+                                            + str(Y)
+                                            + ". Retrying in "
+                                            + f"{BackoffSeconds:.1f}"
+                                            + " seconds."
+                                        ),
+                                    )
+
+                                    sleep(BackoffSeconds)
+
+                                if not Run:
+                                    break
+
+                                continue
+
+                            if TileDownload.status_code == 200:
+                                TileData = gzip.compress(TileDownload.content)
+                                VectorTiles += ((Z, X, Yconversion - Y, TileData),)
+                                SessionTileCount += 1
+                                SuccessfulTilesThisMap += 1
+                                TileDownloadedSuccessfully = True
+
+                                RetryCounter = MaxRetries  # Flag as done
+
+                                if len(VectorTiles) == WriteInterval:
+                                    TotalTileCount = WriteToDB(
+                                        MBtilesDB,
+                                        VectorTiles,
+                                        LogfileName,
+                                        TotalTileCount,
+                                    )
+                                    VectorTiles = ()
+                                    WriteGlobalStatus(
+                                        ProcessStateFile,
+                                        SourceCounter,
+                                        X,
+                                        Y,
+                                        Z,
+                                        TotalTileCount,
+                                    )
+
+                            # Change 3: Respect server-provided Retry-After delays when rate limited
+                            elif TileDownload.status_code == 429:
+                                RetryCounter += 1
+                                RetryAfterSeconds = ParseRetryAfter(
+                                    TileDownload.headers.get("Retry-After")
                                 )
 
-                                Log(
-                                    LogfileName,
-                                    (
-                                        "Request error for tile Z,X,Y "
+                                if RetryCounter == MaxRetries:
+                                    Log(
+                                        LogfileName,
+                                        "Error: Rate limit persisted for tile Z,X,Y "
+                                        + str(Z)
+                                        + " "
+                                        + str(X)
+                                        + " "
+                                        + str(Y),
+                                    )
+                                    Log(
+                                        LogfileName,
+                                        "Status:" + str(TileDownload.status_code),
+                                    )
+                                    Log(
+                                        LogfileName,
+                                        "URL:" + TileDownload.url,
+                                    )
+                                    Log(
+                                        LogfileName,
+                                        "Response headers:" + str(TileDownload.headers),
+                                    )
+                                    Run = False
+                                else:
+                                    Log(
+                                        LogfileName,
+                                        (
+                                            "Rate limited for tile Z,X,Y "
+                                            + str(Z)
+                                            + " "
+                                            + str(X)
+                                            + " "
+                                            + str(Y)
+                                            + ". Retrying in "
+                                            + f"{RetryAfterSeconds:.1f}"
+                                            + " seconds."
+                                        ),
+                                    )
+
+                                    sleep(RetryAfterSeconds)
+
+                            elif TileDownload.status_code == 404:
+                                RetryCounter += 1
+
+                                if RetryCounter == MaxRetries:
+                                    TileMissing = True
+                                    MissingTilesThisMap += 1
+                                    Log(
+                                        LogfileName,
+                                        "Warning: Tile Z,X,Y "
                                         + str(Z)
                                         + " "
                                         + str(X)
                                         + " "
                                         + str(Y)
-                                        + ". Retrying in "
-                                        + f"{BackoffSeconds:.1f}"
-                                        + " seconds."
-                                    ),
-                                )
+                                        + " seems out of bounds (404)",
+                                    )
 
-                                sleep(BackoffSeconds)
+                            else:
+                                RetryCounter += 1
+
+                                if RetryCounter == MaxRetries:
+                                    Log(
+                                        LogfileName,
+                                        "Error: Failed to download tile Z,X,Y "
+                                        + str(Z)
+                                        + " "
+                                        + str(X)
+                                        + " "
+                                        + str(Y),
+                                    )
+                                    Log(
+                                        LogfileName,
+                                        "Status:" + str(TileDownload.status_code),
+                                    )
+                                    Log(
+                                        LogfileName,
+                                        "URL:" + TileDownload.url,
+                                    )
+                                    Log(
+                                        LogfileName,
+                                        "Request headers:"
+                                        + str(TileDownload.request.headers),
+                                    )
+                                    Log(
+                                        LogfileName,
+                                        "Response headers:" + str(TileDownload.headers),
+                                    )
+                                    Run = False  # Currently no way to handle errors more gracefully - just stop the program and retry with next run.
+                                else:
+                                    # Change 4: Back off exponentially before retrying other HTTP errors
+                                    BackoffSeconds = CalculateRetryBackoff(
+                                        ReadSpacing,
+                                        RetryCounter,
+                                    )
+
+                                    Log(
+                                        LogfileName,
+                                        (
+                                            "HTTP "
+                                            + str(TileDownload.status_code)
+                                            + " for tile Z,X,Y "
+                                            + str(Z)
+                                            + " "
+                                            + str(X)
+                                            + " "
+                                            + str(Y)
+                                            + ". Retrying in "
+                                            + f"{BackoffSeconds:.1f}"
+                                            + " seconds."
+                                        ),
+                                    )
+
+                                    sleep(BackoffSeconds)
 
                             if not Run:
                                 break
 
-                            continue
+                        LevelTilesProcessed += 1
+                        OverallTilesProcessed += 1
 
-                        if TileDownload.status_code == 200:
-                            TileData = gzip.compress(TileDownload.content)
-                            VectorTiles += ((Z, X, Yconversion - Y, TileData),)
-                            SessionTileCount += 1
-                            SuccessfulTilesThisMap += 1
-                            TileDownloadedSuccessfully = True
+                        CurrentTime = time.monotonic()
 
-                            RetryCounter = MaxRetries  # Flag as done
+                        if (
+                            CurrentTime - LastProgressTime >= ProgressInterval
+                            or LevelTilesProcessed == LevelTilesToProcess
+                            or not Run
+                        ):
+                            ElapsedSeconds = CurrentTime - ProgressStartTime
 
-                            if len(VectorTiles) == WriteInterval:
-                                TotalTileCount = WriteToDB(
-                                    MBtilesDB, VectorTiles, LogfileName, TotalTileCount
-                                )
-                                VectorTiles = ()
-                                WriteGlobalStatus(
-                                    ProcessStateFile,
-                                    SourceCounter,
-                                    X,
-                                    Y,
-                                    Z,
-                                    TotalTileCount,
-                                )
+                            if ElapsedSeconds > 0:
+                                ProcessingSpeed = OverallTilesProcessed / ElapsedSeconds
+                            else:
+                                ProcessingSpeed = 0
 
-                        # Change 3: Respect server-provided Retry-After delays when rate limited
-                        elif TileDownload.status_code == 429:
-                            RetryCounter += 1
-                            RetryAfterSeconds = ParseRetryAfter(
-                                TileDownload.headers.get("Retry-After")
+                            RemainingTiles = max(
+                                TotalTilesToProcess - OverallTilesProcessed,
+                                0,
                             )
 
-                            if RetryCounter == MaxRetries:
-                                Log(
-                                    LogfileName,
-                                    "Error: Rate limit persisted for tile Z,X,Y "
-                                    + str(Z)
-                                    + " "
-                                    + str(X)
-                                    + " "
-                                    + str(Y),
+                            if ProcessingSpeed > 0:
+                                ETASeconds = RemainingTiles / ProcessingSpeed
+                                ETAString = str(
+                                    datetime.timedelta(seconds=int(ETASeconds))
                                 )
-                                Log(
-                                    LogfileName,
-                                    "Status:" + str(TileDownload.status_code),
-                                )
-                                Log(LogfileName, "URL:" + TileDownload.url)
-                                Log(
-                                    LogfileName,
-                                    "Response headers:" + str(TileDownload.headers),
-                                )
-                                Run = False
                             else:
-                                Log(
-                                    LogfileName,
-                                    (
-                                        "Rate limited for tile Z,X,Y "
-                                        + str(Z)
-                                        + " "
-                                        + str(X)
-                                        + " "
-                                        + str(Y)
-                                        + ". Retrying in "
-                                        + f"{RetryAfterSeconds:.1f}"
-                                        + " seconds."
-                                    ),
-                                )
+                                ETAString = "unknown"
 
-                                sleep(RetryAfterSeconds)
-
-                        elif TileDownload.status_code == 404:
-                            RetryCounter += 1
-
-                            if RetryCounter == MaxRetries:
-                                TileMissing = True
-                                MissingTilesThisMap += 1
-                                Log(
-                                    LogfileName,
-                                    "Warning: Tile Z,X,Y "
-                                    + str(Z)
-                                    + " "
-                                    + str(X)
-                                    + " "
-                                    + str(Y)
-                                    + " seems out of bounds (404)",
+                            if LevelTilesToProcess > 0:
+                                LevelPercent = (
+                                    LevelTilesProcessed / LevelTilesToProcess * 100
                                 )
-
-                        else:
-                            RetryCounter += 1
-
-                            if RetryCounter == MaxRetries:
-                                Log(
-                                    LogfileName,
-                                    "Error: Failed to download tile Z,X,Y "
-                                    + str(Z)
-                                    + " "
-                                    + str(X)
-                                    + " "
-                                    + str(Y),
-                                )
-                                Log(
-                                    LogfileName,
-                                    "Status:" + str(TileDownload.status_code),
-                                )
-                                Log(LogfileName, "URL:" + TileDownload.url)
-                                Log(
-                                    LogfileName,
-                                    "Request headers:"
-                                    + str(TileDownload.request.headers),
-                                )
-                                Log(
-                                    LogfileName,
-                                    "Response headers:" + str(TileDownload.headers),
-                                )
-                                Run = False  # Currently no way to handle errors more gracefully - just stop the program and retry with next run.
                             else:
-                                # Change 4: Back off exponentially before retrying other HTTP errors
-                                BackoffSeconds = CalculateRetryBackoff(
-                                    ReadSpacing,
-                                    RetryCounter,
-                                )
+                                LevelPercent = 100
 
-                                Log(
-                                    LogfileName,
-                                    (
-                                        "HTTP "
-                                        + str(TileDownload.status_code)
-                                        + " for tile Z,X,Y "
-                                        + str(Z)
-                                        + " "
-                                        + str(X)
-                                        + " "
-                                        + str(Y)
-                                        + ". Retrying in "
-                                        + f"{BackoffSeconds:.1f}"
-                                        + " seconds."
-                                    ),
+                            if TotalTilesToProcess > 0:
+                                OverallPercent = (
+                                    OverallTilesProcessed / TotalTilesToProcess * 100
                                 )
+                            else:
+                                OverallPercent = 100
 
-                                sleep(BackoffSeconds)
+                            Log(
+                                LogfileName,
+                                (
+                                    f"{datetime.datetime.now():%H:%M:%S} | "
+                                    f"z{Z} "
+                                    f"{LevelTilesProcessed}/{LevelTilesToProcess} "
+                                    f"({LevelPercent:.1f}%) | "
+                                    f"overall "
+                                    f"{OverallTilesProcessed}/{TotalTilesToProcess} "
+                                    f"({OverallPercent:.1f}%) | "
+                                    f"downloaded {SuccessfulTilesThisMap} | "
+                                    f"missing {MissingTilesThisMap} | "
+                                    f"{ProcessingSpeed:.2f} tiles/s | "
+                                    f"ETA {ETAString}"
+                                ),
+                            )
+
+                            LastProgressTime = CurrentTime
 
                         if not Run:
                             break
-
-                    LevelTilesProcessed += 1
-                    OverallTilesProcessed += 1
-
-                    CurrentTime = time.monotonic()
-
-                    if (
-                        CurrentTime - LastProgressTime >= ProgressInterval
-                        or LevelTilesProcessed == LevelTilesToProcess
-                        or not Run
-                    ):
-                        ElapsedSeconds = CurrentTime - ProgressStartTime
-
-                        if ElapsedSeconds > 0:
-                            ProcessingSpeed = OverallTilesProcessed / ElapsedSeconds
-                        else:
-                            ProcessingSpeed = 0
-
-                        RemainingTiles = max(
-                            TotalTilesToProcess - OverallTilesProcessed,
-                            0,
-                        )
-
-                        if ProcessingSpeed > 0:
-                            ETASeconds = RemainingTiles / ProcessingSpeed
-                            ETAString = str(datetime.timedelta(seconds=int(ETASeconds)))
-                        else:
-                            ETAString = "unknown"
-
-                        if LevelTilesToProcess > 0:
-                            LevelPercent = (
-                                LevelTilesProcessed / LevelTilesToProcess * 100
-                            )
-                        else:
-                            LevelPercent = 100
-
-                        if TotalTilesToProcess > 0:
-                            OverallPercent = (
-                                OverallTilesProcessed / TotalTilesToProcess * 100
-                            )
-                        else:
-                            OverallPercent = 100
-
-                        Log(
-                            LogfileName,
-                            (
-                                f"{datetime.datetime.now():%H:%M:%S} | "
-                                f"z{Z} "
-                                f"{LevelTilesProcessed}/{LevelTilesToProcess} "
-                                f"({LevelPercent:.1f}%) | "
-                                f"overall "
-                                f"{OverallTilesProcessed}/{TotalTilesToProcess} "
-                                f"({OverallPercent:.1f}%) | "
-                                f"downloaded {SuccessfulTilesThisMap} | "
-                                f"missing {MissingTilesThisMap} | "
-                                f"{ProcessingSpeed:.2f} tiles/s | "
-                                f"ETA {ETAString}"
-                            ),
-                        )
-
-                        LastProgressTime = CurrentTime
 
                     if not Run:
                         break
@@ -781,58 +825,82 @@ while Run:
                 if not Run:
                     break
 
-            if not Run:
-                break
+            # On SIGTERM or SIGINT and after full loop save DB
+            if len(VectorTiles) > 0:
+                TotalTileCount = WriteToDB(
+                    MBtilesDB,
+                    VectorTiles,
+                    LogfileName,
+                    TotalTileCount,
+                )
 
-        # On SIGTERM or SIGINT and after full loop save DB
-        if len(VectorTiles) > 0:
-            TotalTileCount = WriteToDB(
-                MBtilesDB, VectorTiles, LogfileName, TotalTileCount
-            )
+            if SessionTileCount > 0:
+                WriteGlobalStatus(
+                    ProcessStateFile,
+                    SourceCounter,
+                    X,
+                    Y,
+                    Z,
+                    TotalTileCount,
+                )
 
-        if SessionTileCount > 0:
-            WriteGlobalStatus(ProcessStateFile, SourceCounter, X, Y, Z, TotalTileCount)
+            VectorTiles = ()
 
-        VectorTiles = ()
+            if Run:
+                FullLoops += 1
+                WriteMapStatus(MapStatusFile, FullLoops)
 
-        if Run:
-            FullLoops += 1
-            WriteMapStatus(MapStatusFile, FullLoops)
+                subprocess.run(
+                    [
+                        "mbtiles",
+                        "validate",
+                        "--agg-hash",
+                        "update",
+                        MBtilesDB,
+                    ],
+                    check=True,
+                )
 
-            subprocess.run(
-                ["mbtiles", "validate", "--agg-hash", "update", MBtilesDB],
-                check=True,
-            )
+                shutil.copy(
+                    MBtilesDB,
+                    MBtilesDB.replace(
+                        ".mbtiles",
+                        str(FullLoops) + ".mbtiles",
+                    ),
+                )
 
-            shutil.copy(
-                MBtilesDB, MBtilesDB.replace(".mbtiles", str(FullLoops) + ".mbtiles")
-            )
+                Log(
+                    LogfileName,
+                    "Whole area processed completely - copy created and start next mapsource.",
+                )
 
-            Log(
-                LogfileName,
-                "Whole area processed completely - copy created and start next mapsource.",
-            )
+                SourceCounter += 1
+                TotalTileCount = 0
+                MapRun = False
+                PickupDone = True
 
-            SourceCounter += 1
-            TotalTileCount = 0
-            MapRun = False
-            PickupDone = True
+                if SourceCounter >= len(MapSources):
+                    if os.path.exists(ProcessStateFile):
+                        os.remove(ProcessStateFile)
 
-            if SourceCounter >= len(MapSources):
-                if os.path.exists(ProcessStateFile):
-                    os.remove(ProcessStateFile)
+                    Run = False
 
-                Run = False
+    RequestSession.close()
 
-RequestSession.close()
+    Log(
+        LogfileName,
+        "Shutdown received or error occured - graceful exit successfull.",
+    )
 
-Log(LogfileName, "Shutdown received or error occured - graceful exit successfull.")
+    Log(
+        LogfileName,
+        "------ Download ended at "
+        + str(datetime.datetime.now())
+        + " after getting "
+        + str(SessionTileCount)
+        + " tiles. ------",
+    )
 
-Log(
-    LogfileName,
-    "------ Download ended at "
-    + str(datetime.datetime.now())
-    + " after getting "
-    + str(SessionTileCount)
-    + " tiles. ------",
-)
+
+if __name__ == "__main__":
+    typer.run(main)
