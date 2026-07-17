@@ -234,8 +234,17 @@ while Run:
 		for Z in range(min_z, max_z + 1):
 
 			# Coordinates for Google-style URLs
-			LowerLeft = deg2num(BoundingBox[0], BoundingBox[1], Z)
-			UpperRight = deg2num(BoundingBox[2], BoundingBox[3], Z)
+			LowerLeft = deg2num(
+					BoundingBox[1],  # min latitude
+					BoundingBox[0],  # min longitude
+					Z
+			)
+
+			UpperRight = deg2num(
+					BoundingBox[3],  # max latitude
+					BoundingBox[2],  # max longitude
+					Z
+			)
 
 			min_x = LowerLeft[0]
 			max_x = UpperRight[0]
