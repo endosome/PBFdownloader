@@ -32,6 +32,7 @@
 # For a detailed description and instructions visit: https://projects.webvoss.de/2025/09/27/fair-use-download-of-large-vector-maps/
 #
 
+import subprocess
 import requests
 import math
 import signal
@@ -435,6 +436,11 @@ while Run:
         if Run:
             FullLoops += 1
             WriteMapStatus(MapStatusFile, FullLoops)
+
+            subprocess.run(
+                ["mbtiles", "validate", "--agg-hash", "update", MBtilesDB], check=True
+            )
+
             shutil.copy(
                 MBtilesDB, MBtilesDB.replace(".mbtiles", str(FullLoops) + ".mbtiles")
             )
