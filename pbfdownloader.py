@@ -12,14 +12,14 @@
 # Map configuration is stored in a json file, with the following scheme:
 # {
 # 	"FreelyChosenMapName": {
-# 		"DownloadURL": "https://{server}.mapsource.tld/path/to/pbf/tiles/{z}/{x}/{y}/tile.pbf?any=get&var=needed",	  # {server} is placeholder for serverparts (load balancing), {x}, {y} and {z} are placeholders for tile coordinate
+# 		"DownloadURL": "https://{server}.mapsource.tld/path/to/pbf/tiles/{z}/{x}/{y}/tile.pbf?any=get&var=needed",     # {server} is placeholder for serverparts (load balancing), {x}, {y} and {z} are placeholders for tile coordinate
 # 		"BoundingBox": [min_lon, min_lat, max_lon, max_lat],
-# 		"ServerParts": ["server1", "server2", ...],                                                                   # may be empty, i.e. [""], if no {server} placeholder is present in DownloadURL
+# 		"ServerParts": ["server1", "server2", ...],                                                         # may be empty, i.e. [""], if no {server} placeholder is present in DownloadURL
 # 		"MBtilesDB": "/path/to/your/MBtiles-file.mbtiles",
 # 		"Name": "Mapname in the MBtiles DB",
 # 		"min_z": 0,
 # 		"max_z": 14,
-# 		"ReadSpacing": 1.5																							  # wait-time between to requests in seconds
+# 		"ReadSpacing": 1.5                                                                                  # wait-time between to requests in seconds
 # 	},
 #   "NextMap": {...},
 #   ...
@@ -32,7 +32,6 @@
 # For a detailed description and instructions visit: https://projects.webvoss.de/2025/09/27/fair-use-download-of-large-vector-maps/
 #
 
-from pymbtiles import MBtiles, Tile
 import requests
 import math
 import signal
@@ -141,12 +140,20 @@ def CountDatabaseTiles(database_file):
 
 
 def WriteToDB(DatabaseFile, TileList, LogfileName, TotalTileCount):
-    before_count = CountDatabaseTiles(DatabaseFile)
+    with sqlite3.connect(DatabaseFile) as database:
+        before_count = database.execute("SELECT COUNT(*) FROM tiles").fetchone()[0]
 
-    with MBtiles(DatabaseFile, mode="r+") as database:
-        database.write_tiles(TileList)
+        database.executemany(
+            """
+            INSERT OR REPLACE INTO tiles
+            (zoom_level, tile_column, tile_row, tile_data)
+            VALUES (?, ?, ?, ?)
+            """,
+            TileList,
+        )
 
-    after_count = CountDatabaseTiles(DatabaseFile)
+        after_count = database.execute("SELECT COUNT(*) FROM tiles").fetchone()[0]
+
     unique_added = after_count - before_count
     overwritten = len(TileList) - unique_added
 
@@ -235,22 +242,40 @@ while Run:
     # 	print(MaxRetries)
     # 	print(FullLoops)
 
-    if os.path.exists(MBtilesDB):
-        AccessMode = "r+"
-    else:
-        AccessMode = "w"
-
-    with MBtiles(MBtilesDB, AccessMode) as out:
-        out.meta["name"] = MapName
-        out.meta["format"] = "pbf"
-        out.meta["crs"] = "EPSG:3857"
-        out.meta["minzoom"] = str(min_z0)
-        out.meta["maxzoom"] = str(max_z)
-        # MBTiles 1.3 specification requires bounds in this order:
-        # left, bottom, right, top
-        # which corresponds to:
-        # west longitude, south latitude, east longitude, north latitude
-        out.meta["bounds"] = ",".join(str(value) for value in BoundingBox)
+    with sqlite3.connect(MBtilesDB) as out:
+        out.execute("""
+            CREATE TABLE IF NOT EXISTS metadata (
+                name TEXT NOT NULL PRIMARY KEY,
+                value TEXT
+            )
+            """)
+        out.execute("""
+            CREATE TABLE IF NOT EXISTS tiles (
+                zoom_level INTEGER NOT NULL,
+                tile_column INTEGER NOT NULL,
+                tile_row INTEGER NOT NULL,
+                tile_data BLOB NOT NULL,
+                PRIMARY KEY (zoom_level, tile_column, tile_row)
+            )
+            """)
+        out.executemany(
+            """
+            INSERT OR REPLACE INTO metadata (name, value)
+            VALUES (?, ?)
+            """,
+            (
+                ("name", MapName),
+                ("format", "pbf"),
+                ("crs", "EPSG:3857"),
+                ("minzoom", str(min_z0)),
+                ("maxzoom", str(max_z)),
+                # MBTiles 1.3 specification requires bounds in this order:
+                # left, bottom, right, top
+                # which corresponds to:
+                # west longitude, south latitude, east longitude, north latitude
+                ("bounds", ",".join(str(value) for value in BoundingBox)),
+            ),
+        )
 
     while MapRun and Run:
 
@@ -325,9 +350,7 @@ while Run:
 
                         if TileDownload.status_code == 200:
                             TileData = gzip.compress(TileDownload.content)
-                            VectorTiles += (
-                                Tile(z=Z, x=X, y=Yconversion - Y, data=TileData),
-                            )
+                            VectorTiles += ((Z, X, Yconversion - Y, TileData),)
                             SessionTileCount += 1
 
                             RetryCounter = MaxRetries  # Flag as done
