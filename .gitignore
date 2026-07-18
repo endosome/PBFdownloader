@@ -174,3 +174,5 @@ pyrightconfig.json
 *.txt
 *.log
 
+*.json
+!mapconfig.example.json
