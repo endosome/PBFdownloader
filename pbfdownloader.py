@@ -25,15 +25,6 @@
 #     "NextMap": {...},
 #     ...
 # }
-#
-# Written by Hauke 2025+
-#
-# License: CC BY-SA 4.0 Attribution-ShareAlike 4.0 International
-# (https://creativecommons.org/licenses/by-sa/4.0/)
-#
-# For a detailed description and instructions visit:
-# https://projects.webvoss.de/2025/09/27/fair-use-download-of-large-vector-maps/
-#
 
 import datetime
 import gzip
@@ -52,8 +43,6 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import requests
 import typer
-
-######## CONFIG start ######
 
 # Write to DB every X new tiles collected
 WRITE_INTERVAL: int = 250
@@ -89,8 +78,6 @@ HEADERS: Dict[str, str] = {
     )
 }
 
-######## CONFIG end ######
-
 MapSourceConfig = Dict[str, Any]
 MapConfig = Dict[str, MapSourceConfig]
 TileRecord = Tuple[int, int, int, bytes]
@@ -106,8 +93,6 @@ class Status(NamedTuple):
 
 
 run: bool = True
-
-######## INIT end #######
 
 
 # From:
@@ -150,7 +135,7 @@ def write_global_status(
         status_file.write(str(y) + "\n")
         status_file.write(str(total_tile_count) + "\n")
 
-    print("Updated Download State")
+    log("Updated download state")
 
 
 def read_global_status(file: Path) -> Status:
@@ -304,9 +289,6 @@ def handle_stop_signals(
     run = False
 
 
-######## Procedures end #########
-
-
 def main(
     config: Path = typer.Option(
         Path("mapconfig.json"),
@@ -341,7 +323,7 @@ def main(
     request_session: requests.Session = requests.Session()
     request_session.headers.update(HEADERS)
 
-    log("------ Start at " + str(datetime.datetime.now()) + " ------")
+    log("Start at " + str(datetime.datetime.now()))
 
     signal.signal(signal.SIGINT, handle_stop_signals)
     signal.signal(signal.SIGTERM, handle_stop_signals)
@@ -432,21 +414,6 @@ def main(
                 f"jitter ±{REQUEST_JITTER_FRACTION * 100:.0f}%)"
             )
         )
-
-        ### For Debugging
-        # print(download_url)
-        # print(server_parts)
-        # print(mbtiles_database)
-        # print(map_name)
-        # print(max_z)
-        # print(min_z_default)
-        # print(min_z)
-        # print(bounding_box)
-        # print(read_spacing)
-        # print(map_status_file)
-        # print(number_of_server_parts)
-        # print(max_retries)
-        # print(full_loops)
 
         with sqlite3.connect(mbtiles_database) as output_database:
             output_database.execute("""
@@ -1010,7 +977,7 @@ def main(
     log(("Shutdown received or error occured - graceful exit " "successfull."))
 
     log(
-        "------ Download ended at "
+        "Download ended at "
         + str(datetime.datetime.now())
         + " after getting "
         + str(session_tile_count)
