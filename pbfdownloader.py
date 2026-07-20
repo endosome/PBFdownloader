@@ -120,6 +120,44 @@ def degrees_to_tile_number(
     return x_tile, y_tile
 
 
+def get_next_tile_position(
+    x: int,
+    y: int,
+    z: int,
+    min_x: int,
+    max_x: int,
+    max_y: int,
+    max_z: int,
+    bounding_box: List[float],
+) -> Tuple[int, int, int]:
+    """Return the next XYZ tile position in the downloader's traversal order."""
+    if x < max_x:
+        return x + 1, y, z
+
+    if y < max_y:
+        return min_x, y + 1, z
+
+    if z < max_z:
+        next_lower_left: Tuple[int, int] = degrees_to_tile_number(
+            bounding_box[1],
+            bounding_box[0],
+            z + 1,
+        )
+
+        next_upper_right: Tuple[int, int] = degrees_to_tile_number(
+            bounding_box[3],
+            bounding_box[2],
+            z + 1,
+        )
+
+        return next_lower_left[0], next_upper_right[1], z + 1
+
+    # There is no next tile after the final tile of the final zoom level.
+    # Keep the final position so an interruption during finalization can safely
+    # repeat at most the last tile instead of skipping data.
+    return x, y, z
+
+
 def write_global_status(
     file: Path,
     source: int,
@@ -347,8 +385,10 @@ def main(
         min_z: int = pickup_status.z
         total_tile_count = pickup_status.total_tile_count
         source_counter = pickup_status.source
-        pickup_done: bool = pickup_status.x == 0
-        map_run: bool = True
+
+        # A state file always means that the first zoom level must resume from
+        # its stored X/Y position, including the valid case where X equals 0.
+        pickup_done: bool = False
     else:
         pickup_done = True
 
@@ -392,7 +432,7 @@ def main(
         if pickup_done:
             min_z = min_z_default
 
-        map_run = True
+        map_run: bool = True
 
         number_of_server_parts: int = len(server_parts)
 
@@ -497,6 +537,14 @@ def main(
         progress_start_time: float = time.monotonic()
         last_progress_time: float = progress_start_time
 
+        # The checkpoint always identifies the next tile that should be
+        # processed. It is updated after every completed or confirmed-missing
+        # tile and persisted after every database write and graceful shutdown.
+        checkpoint_x: int = 0
+        checkpoint_y: int = 0
+        checkpoint_z: int = min_z
+        checkpoint_available: bool = False
+
         log("Total tiles scheduled for this run: " + str(total_tiles_to_process))
 
         while map_run and run:
@@ -533,25 +581,37 @@ def main(
 
                 number_of_tiles: int = (max_x - min_x + 1) * (max_y - min_y + 1)
 
-                write_global_status(
-                    PROCESS_STATE_FILE,
-                    source_counter,
-                    min_x,
-                    min_y,
-                    z,
-                    total_tile_count,
-                )
-
                 level_pickup: bool = not pickup_done
 
                 if pickup_done:
                     start_y: int = min_y
                     level_tiles_to_process: int = number_of_tiles
+
+                    checkpoint_x = min_x
+                    checkpoint_y = min_y
+                    checkpoint_z = z
+                    checkpoint_available = True
+
+                    # For a fresh zoom level, save its first tile as the next
+                    # tile to process. Do not overwrite a resumed X/Y position.
+                    write_global_status(
+                        PROCESS_STATE_FILE,
+                        source_counter,
+                        checkpoint_x,
+                        checkpoint_y,
+                        checkpoint_z,
+                        total_tile_count,
+                    )
                 else:
                     start_y = pickup_status.y
                     level_tiles_to_process = (max_y - pickup_status.y) * (
                         max_x - min_x + 1
                     ) + (max_x - pickup_status.x + 1)
+
+                    checkpoint_x = pickup_status.x
+                    checkpoint_y = pickup_status.y
+                    checkpoint_z = pickup_status.z
+                    checkpoint_available = True
 
                 level_tiles_processed: int = 0
 
@@ -628,7 +688,6 @@ def main(
                                     )
 
                                     log("Request error: " + str(request_error))
-
                                     log("URL:" + url)
 
                                     run = False
@@ -680,24 +739,6 @@ def main(
                                 # Flag as done
                                 retry_counter = max_retries
 
-                                if len(vector_tiles) == WRITE_INTERVAL:
-                                    total_tile_count = write_to_database(
-                                        mbtiles_database,
-                                        vector_tiles,
-                                        total_tile_count,
-                                    )
-
-                                    vector_tiles = ()
-
-                                    write_global_status(
-                                        PROCESS_STATE_FILE,
-                                        source_counter,
-                                        x,
-                                        y,
-                                        z,
-                                        total_tile_count,
-                                    )
-
                             # Change 3: Respect server-provided Retry-After
                             # delays when rate limited
                             elif tile_download.status_code == 429:
@@ -721,9 +762,7 @@ def main(
                                     )
 
                                     log("Status:" + str(tile_download.status_code))
-
                                     log("URL:" + tile_download.url)
-
                                     log(
                                         "Response headers:" + str(tile_download.headers)
                                     )
@@ -739,7 +778,7 @@ def main(
                                             + " "
                                             + str(y)
                                             + ". Retrying in "
-                                            + (f"{retry_after_seconds:.1f}")
+                                            + f"{retry_after_seconds:.1f}"
                                             + " seconds."
                                         )
                                     )
@@ -761,7 +800,7 @@ def main(
                                             + str(x)
                                             + " "
                                             + str(y)
-                                            + (" seems out of bounds " "(404)")
+                                            + " seems out of bounds (404)"
                                         )
                                     )
 
@@ -782,14 +821,11 @@ def main(
                                     )
 
                                     log("Status:" + str(tile_download.status_code))
-
                                     log("URL:" + tile_download.url)
-
                                     log(
                                         "Request headers:"
                                         + str(tile_download.request.headers)
                                     )
-
                                     log(
                                         "Response headers:" + str(tile_download.headers)
                                     )
@@ -826,6 +862,51 @@ def main(
 
                             if not run:
                                 break
+
+                        # A completed download or a confirmed 404 advances the
+                        # checkpoint to the next tile. A transient/fatal error
+                        # keeps the checkpoint on the current tile for retry.
+                        if tile_downloaded_successfully or tile_missing:
+                            (
+                                checkpoint_x,
+                                checkpoint_y,
+                                checkpoint_z,
+                            ) = get_next_tile_position(
+                                x,
+                                y,
+                                z,
+                                min_x,
+                                max_x,
+                                max_y,
+                                max_z,
+                                bounding_box,
+                            )
+                        else:
+                            checkpoint_x = x
+                            checkpoint_y = y
+                            checkpoint_z = z
+
+                        checkpoint_available = True
+
+                        # Persist both the downloaded tile batch and the next
+                        # tile position at the same checkpoint boundary.
+                        if len(vector_tiles) == WRITE_INTERVAL:
+                            total_tile_count = write_to_database(
+                                mbtiles_database,
+                                vector_tiles,
+                                total_tile_count,
+                            )
+
+                            vector_tiles = ()
+
+                            write_global_status(
+                                PROCESS_STATE_FILE,
+                                source_counter,
+                                checkpoint_x,
+                                checkpoint_y,
+                                checkpoint_z,
+                                total_tile_count,
+                            )
 
                         level_tiles_processed += 1
                         overall_tiles_processed += 1
@@ -915,13 +996,15 @@ def main(
                     total_tile_count,
                 )
 
-            if session_tile_count > 0:
+            # Save the next tile position after the database flush so the
+            # checkpoint never skips tiles that only existed in memory.
+            if checkpoint_available:
                 write_global_status(
                     PROCESS_STATE_FILE,
                     source_counter,
-                    x,
-                    y,
-                    z,
+                    checkpoint_x,
+                    checkpoint_y,
+                    checkpoint_z,
                     total_tile_count,
                 )
 
@@ -929,6 +1012,7 @@ def main(
 
             if run:
                 full_loops += 1
+
                 write_map_status(
                     map_status_file,
                     full_loops,
@@ -974,14 +1058,14 @@ def main(
 
     request_session.close()
 
-    log(("Shutdown received or error occured - graceful exit " "successfull."))
+    log("Shutdown received or error occurred - graceful exit successful.")
 
     log(
         "Download ended at "
         + str(datetime.datetime.now())
         + " after getting "
         + str(session_tile_count)
-        + " tiles. ------"
+        + " tiles."
     )
 
 
